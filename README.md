@@ -1,0 +1,2 @@
+# PPbc
+Bakalárska práca
