@@ -60,7 +60,7 @@
 %%% Údaje o práci
 
 % Název práce v jazyce práce (přesně podle zadání)
-\def\NazevPrace{Systém pre introspekciu v C++}
+\def\NazevPrace{Systém pro introspekci v C++}
 
 % Název práce v angličtině
 \def\NazevPraceEN{A system for introspection in C++}
@@ -101,10 +101,10 @@
 
 % Abstrakt (doporučený rozsah cca 80-200 slov; nejedná se o zadání práce)
 \def\Abstrakt{%
-Introspekcia a reflexia sú silné programovacie nástroje umožňujúce všeobecné riešenie problematických úloh, ako napríklad multiple dispatch alebo serializácia. V C++ je podpora pre introspekciu veľmi slabá a~je obmedzená iba na kompilačný čas. Reflexia v C++ nie je možná vôbec. Cieľom tejto práce je vytvoriť knižnicu pre introspekciu, pracujúcu s~metadátami vygenerovanými zo zdrojového textu, a~vytvoriť generátor týchto metadát ako nástroj nad prekladačom. Funkčnosť celého systému demonštrujeme implementáciou multiple dispatch, ktorý nie je implementovateľný v~štandardnom C++.
+Introspekcia a reflexia sú silné programovacie nástroje umožňujúce všeobecné riešenie problematických úloh, ako napríklad multiple dispatch alebo serializácia. V C++ je podpora pre introspekciu veľmi slabá a~reflexia nie je možná vôbec. Cieľom tejto práce je vytvoriť knižnicu pre introspekciu, pracujúcu s~metadátami vygenerovanými zo zdrojového textu, a~vytvoriť generátor týchto metadát ako nástroj nad prekladačom. Funkčnosť celého systému demonštrujeme implementáciou multiple dispatch, ktorý nie je implementovateľný v~štandardnom C++.
 }
 \def\AbstraktEN{%
-Introspection and reflection are powerful programming tools that allow generic solutions for difficult problems such as multiple dispatch or serialization. In C++, the support for introspection is seriously limited and confined to compile time, while reflection is virtually non-existent. The goal of this thesis is the creation of an introspection library working with metadata generated from source code and the creation of a compiler-based metadata generator. The functionality of the whole system shall be demonstrated by implementing multiple dispatch which is not implementable in standard C++.
+Introspection and reflection are powerful programming tools that allow generic solutions for difficult problems such as multiple dispatch or serialization. In C++, the support for introspection is seriously limited, while reflection is virtually non-existent. The goal of this thesis is the creation of an introspection library working with metadata generated from source code and the creation of a compiler-based metadata generator. The functionality of the whole system shall be demonstrated by implementing multiple dispatch which is not implementable in standard C++.
 }
 
 % 3 až 5 klíčových slov (doporučeno), každé uzavřeno ve složených závorkách
@@ -135,9 +135,6 @@ Introspection and reflection are powerful programming tools that allow generic s
 %%% Jednotlivé kapitoly práce jsou pro přehlednost uloženy v samostatných souborech
 \include{uvod}
 \include{kap01}
-\include{kap02}
-\include{kap03}
-\include{kap04}
 
 \include{zaver}
 
