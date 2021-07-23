@@ -1,0 +1,5 @@
+\Author{Peter Fačko}
+\Title{Systém pre introšpekciu v C++}
+\Keywords{introšpekcia\sep C++ \sep analýza zdrojových textov}
+\Subject{Introšpekcia a reflexia sú silné programovacie nástroje umožňujúce všeobecné riešenie problematických úloh, ako napríklad multiple dispatch alebo serializácia. V C++ je podpora pre introšpekciu veľmi slabá a reflexia nie je možná vôbec. Štandard jazyka sa za posledné obdobie značne rozvinul, vďaka čomu je už možné do jazyka tieto mechanizmy doplniť vlastným rozšírením. Výsledkom tejto práce je knižnica pre introšpekciu pracujúca s metadátami vygenerovanými zo zdrojového textu a generátor týchto metadát ako nástroj nad prekladačom. Funkčnosť celého systému je demonštrovaná implementáciou mechanizmu multiple dispatch, ktorý nie je jednoducho implementovateľný v štandardnom C++}
+\Publisher{Univerzita Karlova}

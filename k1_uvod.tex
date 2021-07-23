@@ -1,0 +1,149 @@
+\chapter{Úvod}
+
+Hlavnými zameraniami tejto práce sú \emph{reflexia} a~\emph{introšpekcia}. Reflexia je schopnosť programu manipulovať s~reprezentáciami stavu daného programu ako s~dátami. Jeden z~aspektov reflexie je introšpekcia, čo je schopnosť programu pozorovať svoj vlastný stav \citep{demers1995reflection}. Introšpekcia je v~moderných programovacích jazykoch bežnou schopnosťou: jej podpora sa nachádza napríklad v~\Csharp{}, Java, JavaScript a~Python, čo sú niektoré z~najpopulárnejších jazykov dnešnej doby \citep{jetbrains}.
+
+Podobne populárnym jazykom je \Cpp{}. V~ňom je na rozdiel od zvyšných jazykov podpora pre introšpekciu minimálna. Dokážeme získať veľkosť a~zarovnanie typu a~z~objektov získať za behu určité veľmi obmedzené informácie o~ich type. Táto minimálna podpora dynamickej introšpekcie je spôsobená tým, že jazyk \Cpp{} sa vo všeobecnosti snaží o~čo najmenšie behové prostredie. Obmedzená statická introšpekcia je zrejme dôsledkom náročnosti štandardizačného procesu, keďže návrh na jej podporu existuje už nejaký čas, no zatiaľ nebol do štandardu začlenený \citep{loikkanen}. Je možné, že sa stane súčasťou \Cpp23.
+
+V iných sférach pokročil jazyk \Cpp{} výrazne. Hlavným príkladom je podpora vykonávania stále viac úkonov, ktoré sú typicky možné iba za behu programu, aj počas prekladu. Menšími novinkami sú napríklad koncepty a~moduly. Tento nedávny posun umožňuje dotvoriť do jazyka podporu pre introšpekciu vo forme knižnice, teda bez potreby obmeny prekladača.
+
+\section{Využitie introšpekcie}
+
+Pred pokusmi implementovať do existujúceho jazyka tak rozsiahle rozšírenie, ako je introšpekcia, je vhodné spomenúť, aký zmysel má takú schopnosť v~jazyku podporovať.
+
+\subsection{Serializácia}
+
+Jedným využitím introšpekcie môže byť automatická serializácia. Užitočné by bolo napísať jeden všeobecný serializačný algoritmus a~každú triedu spracovať na základe jej štruktúry. Informácie o~štruktúre by pochádzali práve z~introšpekcie. Pre jednoduchú \emph{triviálnu} triedu bez odkazov by mohol algoritmus postupne prechádzať dátové členy triedy daného objektu a~rekurzívne ich serializovať. Triviálne triedy sú napríklad C~structy.
+
+\subsection{Registrácia do knižnice}
+
+Všeobecnejšie využitie introšpekcie by bolo možné pri knižnici, ktorá potrebuje registrovať do nejakej štruktúry. Môže ísť napríklad o~parser príkazového riadku, do ktorého sa zaznamenávajú akceptované príkazy. Uvažujme nasledujúce príkazy:
+
+\newpage
+
+\begin{code}
+namespace commands
+{   struct add
+    {   static void execute(int a, int b)
+        { out << a + b << '\n'; }
+    };
+    
+    struct say
+    {   static void execute(string message)
+        { out << message << '\n'; }
+    };
+}
+\end{code}
+%$
+Typicky by sa tieto príkazy registrovali do parseru nejako takto:
+%$
+\begin{code}
+parser.register("add", &commands::add::execute);
+parser.register("say", &commands::say::execute);
+\end{code}
+
+Táto explicitná registrácia by pri introšpekcii nebola nutná. Knižnica by mohla prehľadať namespace \texttt{commands} a~pre každú triedu v~ňom registrovať jeden príkaz s~menom danej triedy a~handler funkciou \texttt{execute}. Predpokladáme, že knižnica by bola schopná zistiť, ako parsovať argumenty z~typov parametrov funkcie, bez introšpekcie, hoci aj s~takým úkonom by mohla introšpekcia pomôcť.
+
+\subsection{Multiple dispatch}
+
+\emph{Multiple dispatch} je mechanizmus programovacích jazykov uplatňujúci sa pri volaní funkcií, kde dochádza k~výberu implementácie funkcie na základe \emph{dynamických typov} argumentov \citep*{muschevici2008multiple}. Dynamický typ výrazu je v~\Cpp{} typ najviac odvodeného objektu (v zmysle dedičnosti), na ktorý výraz odkazuje.
+
+Ak by daná forma introšpekcie podporovala volanie funkcií s~\emph{overload resolution} (OR) --- stačilo by aj v~obmedzenej podobe --- tieto volania by v~podstate podporovali multiple dispatch.
+
+Zjednodušene povedané --- overload resolution v~\Cpp{} funguje tak, že pri volaní vyberá tú najlepšiu funkciu na základe typov parametrov a~argumentov. Príklad:
+%$
+\begin{code}
+struct B {};
+
+struct D1 : B {};
+struct D2 : B {};
+
+void f(const D1& a, const D1& b) { out << "11"; }
+void f(const D1& a, const D2& b) { out << "12"; }
+void f(const D2& a, const D1& b) { out << "21"; }
+void f(const D2& a, const D2& b) { out << "22"; }
+
+f(D1(), D2()); // vypíše 12
+f(D2(), D2()); // vypíše 22
+\end{code}
+%$
+Overload resolution vykonáva prekladač pri preklade; v~preloženom programe sa nachádza na mieste volania už len jedna selektovaná funkcia. Introšpekcia by mohla byť schopná robiť OR aj za behu:
+%$
+\begin{code}
+reflection::invoke("f", D1(), D2()); // vypíše 12
+reflection::invoke("f", D2(), D2()); // vypíše 22
+\end{code}
+
+Tento príklad nie je úplný; na ozajstný multiple dispatch by ešte bolo potrebné, aby introšpekcia podporovala \emph{dynamickú referenciu}. To by bola pomocná trieda, ktorej objektami by sa dalo odkazovať na objekt ľubovoľného typu. Rozbor tejto schopnosti introšpekcie urobíme až pri návrhu programu.
+
+\section{Introšpekcia v~\Cpp{}}
+
+\Cpp{} ponúka introšpekciu v~dvoch podobách.
+
+Do prvej spadajú operátory \texttt{sizeof}, \texttt{sizeof...} a~\texttt{alignof}. Napríklad, \texttt{sizeof} akceptuje ako svoj argument typ alebo výraz a~vracia veľkosť daného typu, respektíve veľkosť typu daného výrazu. Ak je argument výraz, zvažuje sa jeho \emph{statický typ}, nie dynamický typ. Statický typ je typ plynúci z~deklarácie v~zdrojovom texte, napríklad pri výraze volania funkcie je to návratový typ funkcie.
+%$
+\begin{code}
+struct Base {};
+struct Derived : Base {};
+
+Base b;
+Derived d;
+
+Base& x = b;
+Base& y = d;
+
+x; // static type: Base, dynamic type: Base
+y; // static type: Base, dynamic type: Derived
+\end{code}
+%$
+\texttt{sizeof} svoj argument nevyhodnocuje; predmet jeho skúmania je entita zdrojového textu, nie hodnota v~pamäti. Ostatné dva operátory fungujú obdobne: nezvažujú stav programu počas behu, ale informácia, ktorú ponúkajú, plynie iba z~formy zdrojového textu. Táto podoba introšpekcie pozoruje vlastnosti programu v~kompilačnom čase - nazveme ju teda \emph{kompilačná introšpekcia}.
+
+Druhá podoba introšpekcie v~\Cpp{} je založená na operátore \texttt{typeid}. Ten akceptuje typ alebo výraz a~vracia odkaz na \texttt{std::type\_info}, ktorý reprezentuje daný typ, respektíve typ výrazu. \texttt{std::type\_info} má definované úplné usporiadanie a~tiež dokáže získať meno reprezentovaného typu. Rozdiel oproti kompilačnej introšpekcii je tu v~tom, že \texttt{typeid} svoj argument vyhodnocuje, pretože ako typ výrazu ro\-zu\-mie jeho dynamický typ. Ten je známy až za behu programu z~hodnoty výrazu. Táto introšpekcia pozoruje program za behu - nazveme ju \emph{behová introšpekcia}.
+
+Tento pohľad na druhy introšpekcie v~\Cpp{} ukazuje istú medzeru v~ponúkaných nástrojoch štandardným \Cpp{}. Ak jazyk ponúka spôsob, ako z~typu určiť jeho veľkosť, a~tiež poskytuje spôsob, ako z~hodnoty premennej určiť jej \uv{behový} typ, prečo nemožno jednoducho určiť z~hodnoty premennej veľkosť jej \uv{behového} typu? To by vyžadovalo mapovanie medzi reprezentantmi typov a~informáciami o~typoch z~kompilačnej introšpekcie. Toto prepojenie medzi kompilačnou a~behovou intro\-špek\-ciou bude jedným zo zámerov práce.
+
+V tejto kapitole sú zámerne vynechané detaily, ktoré nie sú podstatné pre uvedenie do problematiky introšpekcie v~\Cpp{}. Špeciálne: dynamický typ má zmysel iba pre výrazy kategórie \emph{glvalue}, \emph{prvalue} výrazy sa v~\texttt{typeid} nevyhodnocujú a~ \texttt{typeid} rozlišuje dynamický typ iba výrazov \emph{polymorfných typov}. Všetky tieto nepresnosti a~pojmy budú v~práci vyjasnené neskôr, ak budú mať nejaký dopad na fungovanie programu.
+
+\section{Cieľ práce}
+
+Cieľom práce je rozšíriť schopnosti jazyka \Cpp{} o~introšpekciu. Vo všeobecnosti sa programovací jazyk dá rozšíriť úpravou prekladača. To má žiaľ mnoho nevýhod:
+
+\begin{itemize}
+    \item Dnešné prekladače sú veľmi veľké programy a~vyznať sa v~nich dostatočne na nejaký zmysluplný zásah je náročné.
+    \item Aktuálne neexistuje jeden dominantný prekladač \Cpp{}. V~roku 2020 boli tri prekladače, ktoré používalo pravidelne aspoň 30\,\% programátorov \Cpp{} \citep{jetbrains}. Z~toho by vyplývala potreba implementovať na viaceré platformy, ak by mal byť projekt využiteľný pre podstatné množstvo pro\-gramátorov.
+    \item Prekladače sa neustále vyvíjajú, čiže zachovanie kompatibility by vyžadovalo pravidelnú údržbu.
+    \item Je nepravdepodobné, že by malý projekt jednej osoby bol začlenený do riadneho prekladača, bez ohľadu na kvalitu práce.
+\end{itemize}
+
+Okrem úpravy prekladača je možné rozšíriť \Cpp{} o~introšpekciu použitím symbolov vygenerovaných pre ladenie programu alebo prenesením zodpovednosti na užívateľa, ktorý manuálne poskytne potrebné meta-informácie \citep{brautigam}. Nepoužijeme ani jeden z~troch zatiaľ uvedených spôsobov.
+
+Cieľ bude nájsť také riešenie, ktoré nevyžaduje upravenú verziu prekladača. Navyše aj také, ktoré nebude vyžadovať explicitnú registráciu entít jazyka do knižnice. Celkovo je cieľom, aby reflektovaný kód mohol ostať nezmenený. Hoci ide o~knižnicu, snaha je, aby mal užívateľ pocit, že používa novú verziu jazyka.
+
+Introšpekciou sa --- tak, ako ju implementuje tento projekt --- rozumie:
+%$
+\begin{itemize}
+    \item Užívateľ môže reflektovať entity na \emph{deskriptory}, ktoré uchovávajú informáciu o~danej entite jazyka. Deskriptor je obyčajný \Cpp{} objekt. Napríklad, entite jazyka namespace zodpovedá objekt typu \texttt{namespace\_t}. Deskriptory sú tiež schopné enumerovať svoje časti, členov, predkov a~podobne.
+    \item Je možné \emph{dynamické volanie funkcií}, teda funkciu je možné zavolať cez jej deskriptor. Toto platí vrátane všetkých mechanizmov jazyka aplikujúcich sa počas volania; menovito: overload resolution a~\emph{implicitné konverzie}. Implicitné konverzie sú automatické premeny hodnôt a~typov na argumentoch volania funkcie uskutočnené pred volaním, aby sa zabezpečila typová zhoda s~parametrami.
+    \item Užívateľ má možnosť vytvoriť objekt dynamického typu (podobné \texttt{dynamic} zo \Csharp{}). Tieto dynamické objekty budú pri volaní vracať deskriptory funkcií. Tiež bude k~dispozícii dynamická referencia.
+\end{itemize}
+
+Ďalší cieľ je použiť \texttt{constexpr} tam, kde je to možné a~stojí to za to. Nie je dôvod, aby užívateľ nemohol v~kompilačnom čase získať z~deskriptoru typu jeho veľkosť alebo napríklad aj jeho meno; všetky tieto informácie sú plne dostupné už pri preklade. Naopak, volanie funkcií je omnoho zložitejší úkon, ten \texttt{constexpr} byť nemusí a~ani by to nemalo veľké využitie.
+
+Ako demonštrácia fungovania projektu bude slúžiť implementácia \emph{visitor} návrhového vzoru tak, že navštevovaná trieda nebude potrebovať implementovať virtuálnu funkciu prijímajúcu visitor. Ide o~špeciálny prípad multiple dispatch. Zmysel takéhoto zadania je vynútiť mechanizmus schopný multiple dispatch a~zároveň zachovať možnosť vytvoriť jednoduchý ekvivalent pomocou štandardného jazyka.
+
+Tiež poskytneme porovnanie výkonu medzi virtuálnym volaním v~\Cpp{}, virtuálnym volaním v~\Csharp{}, volaním s~použitím \texttt{dynamic} v~\Csharp{} a~dynamickým volaním funkcií pomocou introšpekcie v~\Cpp{}.
+
+Názov celého projektu je \PPreflection{}.
+
+\section{Štruktúra práce}
+
+V kapitole \ref{suvisiace} preskúmame už existujúce implementácie introšpekcie a~porovnáme ich schopnosti.
+
+Ako vedľajší produkt tohoto projektu vznikla knižnica \PP{}, jej návrh a~základné idey vysvetlíme v~kapitole \ref{PP}.
+
+Návrh a~implementáciu introšpekcie vytvoríme v~kapitole \ref{navrh}. V~tejto kapitole vyriešime úlohy zadané cieľom práce.
+
+V kapitole \ref{pouzitie} vysvetlíme použitie knižnice s~konkrétnymi príkladmi.
+
+Výsledky práce, teda porovnanie výkonu oproti programom s~ekvivalentným chovaním bez použitia introšpekcie, prezentujeme v~kapitole \ref{vysledky}.
+
+Na záver práce zhrnieme nedostatky a~možné vylepšenia práce.

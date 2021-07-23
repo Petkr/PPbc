@@ -1,0 +1,894 @@
+\chapter{Knižnica \PP} \label{PP}
+
+Pri vývoji projektu vznikalo veľké množstvo kódu, ktorý nijako priamo nesúvisí s~introšpekciou, preto sme z~neho vytvorili samostatne stojacu knižnicu \PP{}. Knižnica ponúka nástroje na metaprogramovanie, prácu s~typmi, príjemnejšiu prácu s~n\=/ticami, funkcie vyššieho rádu a~\texttt{constexpr} implementácie niektorých štandardných tried.
+
+Knižnica je výrazne inšpirovaná funkcionálnym programovaním, no zámerne to počas návrhu nespomíname, aby bolo zrejmé, že dané princípy možno objaviť čisto z~potreby napísať čitateľnejší a~kratší kód.
+
+V ukážkach zdrojových textov sú vynechané deklarácie namespace, ktoré si je možné ľahko domyslieť.
+
+\section{Forwarding}
+
+Hoci v~celom projekte sa držíme zásady použiť čo najmenej makier, jedna operácia má v~\Cpp{} také chovanie, že makrá sú jediný spôsob, ako zvýšiť čitateľnosť kódu. Ide o~\emph{forwarding referencie}. Predpokladáme, že čitateľ má dostatočné znalosti \Cpp{}, aby rozumel tomuto chovaniu.
+
+Na lepšiu prácu s~forwarding referenciami si vytvoríme tieto pomocné konštrukty:
+%$
+\begin{code}[fontsize=\footnotesize]
+#define PP_F(x) static_cast<decltype(x)&&>(x)
+
+template <typename T> class forward_wrap
+{   T&& ref;
+public:
+    constexpr forward_wrap(T&& ref) noexcept
+        : ref(PP_F(ref)) {}
+    constexpr forward_wrap(const forward_wrap& other) noexcept
+        : ref(PP_F(other.ref)) {}
+	
+    constexpr decltype(auto) operator--(int) const noexcept
+    { return PP_F(ref); }
+    
+    constexpr decltype(auto) operator()(auto&&... args) const
+    { return PP_F(ref)(F(args)...); }
+};
+template <typename T> forward_wrap(T&&) -> forward_wrap<T>;
+
+constexpr decltype(auto) unwrap_forward(auto&& x) { return PP_F(x); }
+
+template <typename T>
+constexpr decltype(auto) unwrap_forward(const forward_wrap<T>& x)
+{ return x--; }
+
+#define PP_FW(x) ::PP::forward_wrap{ PP_F(x) }
+\end{code}
+%$
+\texttt{PP\_F(x)} je ekvivalentný \texttt{std::forward<T>(x)} pre premennú deklarovanú ako \texttt{T\&\&~x}.
+
+\texttt{forward\_wrap} má dve využitia. Prvým je jednoduchšie forwardovanie: stačí nám raz zabaliť referenciu do objektu \texttt{forward\_wrap} a~potom pri každom volaní \texttt{operator-{}-} interne prebehne forward. Toto využijeme hlavne pri lambda capture, pretože to sprehľadní jej telo. Z~toho istého dôvodu sme pridali aj operátor volania. Druhé využitie má trieda pri volaniach funkcií vyššieho rádu, ktoré vracajú novú funkciu a~potrebujú do nej uložiť niektorý zo svojich parametrov. Keďže parametre sú referenčné, funkcia by potrebovala vedieť, či parameter skopírovať do hodnotovej premennej, alebo ho odovzdať ako referenciu. Toto vyriešime tak, že funkcie vyššieho rádu budú parameter vždy kopírovať, a~ak užívateľ chce predať argument ako referenciu, zabalí ju do \texttt{forward\_wrap}.
+
+\begin{code}
+T object = /*...*/;
+auto f = hof(functor, object);
+auto g = hof(functor, std::move(object));
+auto h = hof(functor, PP_FW(object);
+auto i = hof(functor, PP_FW(std::move(object));
+\end{code}
+%$
+\begin{table}[H]
+\begin{tabular}{lll}
+\toprule
+\textbf{Funktor} & \textbf{Typ vnútornej premennej} & \textbf{Inicializátor} \\
+\midrule
+\texttt{f} & \texttt{T}     & \texttt{object}            \\
+\texttt{g} & \texttt{T}     & \texttt{std::move(object)} \\
+\texttt{h} & \texttt{T\&}   & \texttt{object}            \\
+\texttt{i} & \texttt{T\&\&} & \texttt{std::move(object)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Funkciám vyššieho rádu sa bližšie venuje kapitola \ref{hof}.
+
+\section{Transformácie typov}
+
+Prvou a~hlavnou úlohou, ktorú má knižnica \PP, je zabezpečiť jednoduchý spôsob ako transformovať typy. Transformáciou typu rozumieme zobrazenie z~ typov na typy alebo hodnoty.
+
+Ak by sme transformovali hodnoty, \Cpp{} ponúka jednoduchý nástroj: funkcie. Táto transformácia prijíma hodnotu a~vracia hodnotu:
+%$
+\begin{code}
+size_t times2(size_t a) { return 2 * a; }
+\end{code}
+
+Ak potrebujeme transformovať typy na typy, \Cpp{} ponúka šablónový alias.
+%$
+\begin{code}
+template <typename T> using add_const_t = const T;
+\end{code}
+
+Ďalší silný nástroj, ktorý nám jazyk ponúka, je možnosť použiť tieto entity ako argumenty iných transformácií.
+%$
+\begin{code}
+constexpr decltype(auto) applier(auto&& f, auto&&... a)
+{ return PP_F(f)(PP_F(a)...); }
+// times2(x) ~ applier(times2, x)
+
+template <template <typename...> typename TT, typename... T>
+using applier_t = TT<T...>;
+// add_const_t<U> ~ applier_t<add_const_t, U>
+\end{code}
+%$
+Parameter \texttt{f} funkcie \texttt{applier} sme deklarovali ako forwarding referenciu, teda do argumentu môžeme vložiť ľubovoľný objekt, na ktorom sa dá zavolať operátor volania s~danými argumentami.
+
+Ďalšia možnosť je, že chceme transformovať typy a~dostať hodnotu. Na to jazyk ponúka šablónové premenné.
+%$
+\begin{code}
+template <typename T> constexpr inline auto size_of = sizeof(T);
+\end{code}
+%$
+Problém tohoto konštruktu je, že ho nemôžeme použiť ako argument žiadnej transformácie. Štandardná knižnica rieši tento problém tak, že entita pre danú transformáciu je vždy šablónová trieda, ktorá má v~sebe vnorený výsledok ako alias, resp. statickú premennú.
+%$
+\begin{code}
+template <typename T> struct add_const { using type = const T; };
+template <typename T>
+struct size_of { static constexpr auto value = sizeof(T); };
+\end{code}
+%$
+Pri implementácii \texttt{applier} môžeme využiť dedičnosť. Tak dostaneme do triedy potomka aliasy aj statické premenné.
+%$
+\begin{code}
+template <template <typename...> typename TT, typename... T>
+struct applier : TT<T...> {};
+
+// size_of<U>::value ~ applier<size_of, U>::value
+\end{code}
+
+\subsection{Hodnota ako typ}
+
+Problém by sa mohol zdať vyriešený, ale nie je to tak. Transformáciu \texttt{applier} už ďalej použiť ako argument nemôžeme. To je hlavný problém riešenia cez šablónové triedy. Menším problémom je, že sme rozdelili svet transformácií na dva. Jeden používa funkcie, ktoré transformujú hodnoty, a~druhý používa šablónové triedy, ktoré transformujú typy. Pokiaľ ostávame vo svete šablónových tried, všetko je v~poriadku. Akonáhle potrebujeme tieto dva svety spojiť, čaká nás nepríjemné \uv{vybaľovanie} výsledkov. Alternatívou je vytvoriť pomocný konštrukt, ktorý zoberie transformáciu ako funkciu a~vytvorí z~nej transformáciu ako triedu.
+%$
+\begin{code}
+template <auto f> struct to_class
+{   template <typename V> struct get
+    { static constexpr auto value = f(V::value); };
+};
+// times2(size_of<U>::value) ~ to_class<times2>::get<size_of<U>>::value
+\end{code}
+%$
+Tak sme oddialili vybalenie zase až na koniec výrazu. Tiež sme vytvorili transformáciu \texttt{to\_class<f>::template get}, ktorá sa dá použiť ako argument. Môžeme si tu všimnúť ešte jednu zaujímavosť: táto transformácia prijíma myšlienkovo hodnotu, ale v~kóde akceptuje typ. Skúsime tento trik otočiť, a~nepoužijeme myšlienku \uv{hodnota ako typ}, ale \uv{typ ako hodnota}.
+
+\subsection{Typ ako hodnota}
+
+Najprv vyriešime problém vybaľovania. Už vieme, že ak máme operáciu, ktorá prijíma typ a~vracia hodnotu, môžeme použiť šablónovú premennú alebo šablónovú triedu; ich vlastnosti sme si už priblížili. Je ale aj iná možnosť: šablónové funkcie.
+%$
+\begin{code}
+template <typename T> constexpr auto size_of() { return sizeof(T); }
+\end{code}
+%$
+Funkcia vracia priamo hodnotu, takže žiadne vybaľovanie nie je potrebné. Chyba ale je, že šablónová funkcia sa nedá použiť ako argument. To môžeme vyriešiť tak, že z~nej vytvoríme \emph{funktor}, teda objekt, ktorý sa dá zavolať ako funkcia. V~\Cpp{} to najjednoduchšie docielime lambdou.
+%$
+\begin{code}
+constexpr inline auto size_of = []<typename T>() { return sizeof(T); }
+\end{code}
+%$
+Problém je, že takýto funktor sa nedá zavolať. Typ kam vložiť nemáme a~parametre nie sú žiadne. Tu nastupuje princíp typ ako hodnota. Využijeme mechanizmus jazyka \emph{template argument deduction} (TAD). Je to mechanizmus, ktorý z~typov argumentov šablónovej funkcie vydedukuje jej šablónové argumenty.
+%$
+\begin{code}
+template <typename T> struct type_t {};
+template <typename T> constexpr inline type_t<T> type = {};
+
+constexpr inline auto size_of = []<typename T>(type_t<T>)
+                                { return sizeof(T); }
+    
+// sizeof(U) ~ size_of(type<U>) ~ applier(size_of, type<U>)
+\end{code}
+
+Chovať sa k~typom ako k~hodnotám, je základná myšlienka knižnice \PP{}. Tak môžeme všetky pomocné konštrukty v~knižnici implementovať iba raz tak, aby pracovali s~hodnotami, a~chovať sa k~typom aj hodnotám jednotne. Veľkou výhodou tohoto princípu je, že cez hodnoty môžeme vložiť typy do \texttt{tuple} a~používať na nich všetky už existujúce konštrukty.
+%$
+\begin{code}
+constexpr inline auto sizeofs = []<typename... T>(type_t<T>...)
+                                { return (0 + ... + sizeof(T)); }
+
+// apply(sizeofs, make_tuple(type<U>, type<V>)) ~ sizeof(U) + sizeof(V)
+\end{code}
+
+\subsection{Typ ako koncept}
+
+Zatiaľ sme vo funkciách získavali z~\texttt{type\_t} typ pomocou TAD. Mohli by sme vytvoriť všeobecnejší spôsob, ktorý by sa dal použiť vo všetkých kontextoch. Môžeme do typu \texttt{type\_t} pridať alias.
+%$
+\begin{code}
+template <typename T> struct type_t { using type = T; };
+
+constexpr inline auto sizeofs =
+    [](auto... types)
+    { return (0 + ... + sizeof(typename decltype(types)::type)); }
+\end{code}
+%$
+V tomto kóde sa nikde v~\texttt{sizeofs} nespomína \texttt{type\_t}. Jediná podmienka je, že dostaneme objekt nejakého typu, ktorý má alias \texttt{type}. Vytvorme teda taký koncept a~pomocné konštrukty na získanie typu.
+%$
+\begin{code}
+template <typename T>
+concept type = requires { typename std::remove_reference_t<T>::type; };
+template <typename T>
+using get_type_t = std::remove_reference_t<T>::type;
+#define PP_GT(x) get_type_t<decltype(x)>
+\end{code}
+%$
+Použitie \texttt{std::remove\_reference\_t} je dôležité, pretože v~poslednej implementácii \texttt{sizeofs} sme potrebovali mať parametre \emph{hodnotové}. To kladie ďalšiu podmienku na koncept typu: musí byť kopírovateľný. Ak sa chceme tejto podmienky zbaviť, zmeníme parametre na \texttt{auto\&\&}, lenže tak nám \texttt{decltype} vráti referenčný typ. Tejto referencie navyše sa zbavíme pomocou \texttt{std::remove\_reference\_t}.
+%$
+\begin{code}
+constexpr inline auto sizeofs =
+    [](concepts::type auto&&... t)
+    { return (0 + ... + sizeof(PP_GT(t))); };
+\end{code}
+
+\section{Funkcie vyššieho rádu} \label{hof}
+
+Pri návrhu transformácii typov sme dbali na jednu vec: aby transformácie boli entity, ktoré sa dajú predávať ako argument iným transformáciám. Teraz túto vlastnosť využijeme na vytvorenie \emph{funkcií vyššieho rádu}, teda funkcií ktoré prijímajú alebo vracajú iné funkcie.
+
+\subsection{Funktory operátorov}
+
+Častým argumentom funkcií vyššieho rádu budú operátory. Tie v~\Cpp{} nemajú podobu funktoru, takže si ich musíme vytvoriť. Pre každý binárny operátor \texttt{OP} vytvoríme funktor tohoto tvaru:
+%$
+\begin{code}
+constexpr inline auto opr = [](auto&& x, auto&& y)
+                            { return PP_F(x) OP PP_F(y); };
+\end{code}
+%$
+Analogicky vytvoríme funktory aj pre unárne operátory. Názvy týchto funktorov sa budú vždy skladať z~troch písmen, napríklad \texttt{neg} pre \texttt{operator!}.
+
+\subsection{Vlastné operátory}
+
+Pre niektoré unárne a~binárne funkcie bude vhodné vytvoriť operátor s~rovnakým chovaním. To pre nového používateľa tejto knižnice sprvu zhorší čitateľnosť, ale veríme, že pri tak rozsiahlom používaní funkcií vyššieho rádu ako je v~tejto knižnici to časom spôsobí opačný efekt a~čitateľnosť to zvýši. Príkladom je tento riadok kódu z~\PPreflection{}, ktorý z~n-tice objektov rôznych tried so spoločným predkom vytvorí pole referencií na daného predka.
+%$
+\begin{code}
+auto arr = PP::static__cast * PP::type<const enum_value&> << tup;
+\end{code}
+%$
+Bez použitia vlastných operátorov by tento kód vyzeral takto:
+%$
+\begin{code}
+auto arr = PP::tuple_map_forward_array(
+    PP::apply_partially_first(
+        PP::static__cast, PP::type<const enum_value&>),
+    tup);
+\end{code}
+
+\subsection{\texttt{functor}}
+
+Na vytvorenie vlastných operátorov budeme potrebovať ešte pár konštruktov navyše. Vezmime si ako príklad vymyslenú binárnu funkciu vyššieho rádu \texttt{f}, o~ktorej sme sa rozhodli, že ju zastupuje operátor \texttt{+}.
+%$
+\begin{code}
+constexpr decltype(auto) operator+(auto&& x, auto&& y) 
+{ return f(PP_F(x), PP_F(y)); }
+\end{code}
+%$
+Problém takto deklarovaného operátoru je, že jeho parametre sa viažu na ľubovoľný argument. Čiastočne to rieši mechanizmus jazyka ADL, ktorý by sme využili, ak by tento operátor bol deklarovaný vnútri nejakého namespace a~použitý mimo neho. To ale stále nerieši problém použitia zvnútra namespace. Nechceme, aby sme omylom volali funkciu \texttt{f}, keď potrebujeme napríklad sčítať dve matice. Potrebovali by sme nejaký koncept, ktorým by sme obmedzili typy parametrov.
+
+Pri funkciách vyššieho rádu je takmer vždy niektorým parametrom funktor. Bohužiaľ, v~\Cpp{} nedokážeme vyrobiť všeobecný koncept, ktorý by hovoril, že daný objekt sa dá zavolať s~\emph{nejakými} argumentami. Najbližšie k~nemu je koncept \uv{zavolateľného} typu, ale ten potrebuje typy argumentov daného volania. Túto situáciu vyriešime vytvorením konceptu, ktorý bude vyžadovať iba možnosť zavolať určitú funkciu na objekte danej triedy. Táto funkcia má vrátiť objekt, na ktorom je možné urobiť volanie.
+%$
+\begin{code}
+template <typename T>
+concept functor = requires { std::declval<T>().unwrap_functor(); } ||
+                  requires { unwrap_functor_impl(std::declval<T>()); };
+\end{code}
+%$
+Tento koncept samozrejme nijako nezaručuje schopnosť správneho volania cez mechanizmy jazyka, no dáva sémantické obmedzenie. Ak užívateľ poskytne pre určitý typ dané funkcie, \uv{registruje} typ ako funktor. Predpokladáme, že to neurobí omylom.
+
+K tomuto konceptu navyše vytvoríme funkciu \texttt{unwrap\_functor}, ktorá z~objektu spĺňajúceho \texttt{functor} \uv{vybalí} vnútorný objekt a~pre ostatné sa chová ako identita.
+
+Druhou možnosťou pre typ argumentu vlastného operátoru funkcie vyššieho rádu je \texttt{forward\_wrap}. Pre prípad, že užívateľ zabalí do \texttt{forward\_wrap} nejaký \texttt{functor}, vytvoríme aj funkciu \texttt{unwrap}, ktorá vybaľuje \texttt{forward\_wrap} aj \texttt{functor} a~volá sa rekurzívne. Vlastné operátory budú používať koncept \texttt{wrap}, ktorý je disjunkciou \texttt{functor} a~konceptu, ktorý spĺňa iba trieda \texttt{forward\_wrap}.
+%$
+\begin{code}
+constexpr decltype(auto) operator+(
+    concepts::wrap auto&& x, concepts::wrap auto&& y) 
+{ return f(unwrap_functor(PP_F(x)), unwrap_functor(PP_F(y))); }
+\end{code}
+
+Tiež vytvoríme implementáciu konceptu \texttt{concepts::functor}: šablónovú trie\-du \texttt{functor}. Táto trieda bude iba obalom, ktorý spĺňa daný koncept. Všetky funktory vytvorené knižnicou budú objekty tejto šablóny. Vďaka tomu budeme môcť volať vlastné operátory na hodnotách vrátených funkciami knižnice.
+
+Ďalej budeme namiesto zápisu:
+%$
+\begin{code}
+constexpr inline auto hof = functor{lambda};
+\end{code}
+%$
+používať pseudo kód:
+%$
+\begin{code}
+hof = lambda;
+\end{code}
+
+\subsection{Skladanie}
+
+Často využívanou operáciou na funkciách bude skladanie funkcií. Pri tejto funkcii ešte kvôli názornosti uvedieme implementáciu.
+%$
+\begin{code}[fontsize=\footnotesize]
+compose =
+    [](auto&& ff, auto&& gg)
+    { return functor{[d = unwrap_functor(PP_F(ff)),
+                      g = unwrap_functor(PP_F(gg))]
+                     (auto&&... args) requires /**/
+                     { return unwrap(f)(unwrap(g)(PP_F(args)...)); }}; };
+
+constexpr auto operator|(concepts::wrap auto&& f, concepts::wrap auto&& g) 
+{ return compose(unwrap_functor(PP_F(f)), unwrap_functor(PP_F(g))); }
+
+// compose(f, g)(...) === f(g(...))
+// requires { compose(f, g)(...); } <=> requires { f(g(...); }
+\end{code}
+%$
+\texttt{requires} je potrebné kvôli tomu, aby mohol užívateľ testovať platnosť výrazu, ktorý používa objekt vrátený funkciou \texttt{compose}. Konkrétny výraz je vynechaný kvôli stručnosti.
+
+\subsection{Parciálna aplikácia}
+
+Parciálna aplikácia je operácia na funkcii, ktorá fixuje argumenty funkcie. Napríklad, pre binárnu funkciu, ktorá násobí dve čísla, by sa mohla parciálnou aplikáciou vytvoriť unárna funkcia, ktorá násobí dvojkou. Vo všeobecnosti táto operácia môže fixovať ľubovoľný počet argumentov na ľubovoľných pozíciách. Ukázalo sa, že v~celom projekte túto operáciu vyžadujeme 68-krát, no vždy fixujeme práve jeden argument a~62 prípadov z~toho fixujeme iba prvý. Implementácia špeciálnejšej formy tejto operácie, ktorá fixuje iba prvý argument, je omnoho jednoduchšia a~má príjemnú vlastnosť binárnej operácie. Vytvoríme teda dve verzie, \texttt{apply\_partially\_first} a~všeobecné \texttt{apply\_partially}. Všeobecná verzia bude akceptovať okrem funkcie, ktorú aplikuje, a~argumentu, ktorý fixuje, aj index, na ktorom fixovaný argument leží. \texttt{apply\_partially\_first} dostane operátor \texttt{*}.
+
+\subsection{Negácia}
+
+Príjemnou operáciou by bolo vytvorenie negácie z~funkcie, teda pre funkciu \texttt{f} vytvoriť \texttt{nf}, aby \texttt{nf(...) ~ !f(...)}. Vďaka dvom už vytvoreným funkciám bude táto implementácia veľmi jednoduchá, čo demonštruje zmysel podpory funkcií vyššieho rádu.
+%$
+\begin{code}
+constexpr inline auto negate = compose * neg;
+\end{code}
+
+\section{Hodnota ako hodnota}
+
+Predpokladajme nasledovnú situáciu: máme funkciu, ktorá potrebuje dostať ako parameter hodnotu známu už v~kompilačnom čase. Jeden príklad by bola naša funkcia \texttt{apply\_partially}, ale názornejší príklad je funkcia, ktorá z~n-tice získa prvok na danom indexe. Štandardná knižnica takúto funkciu ponúka a~jej forma je \texttt{std::get<I>(t)}, kde \texttt{I} je index a~\texttt{t} je n-tica (\texttt{std::tuple}). Problém predávania argumentu indexu pomocou šablónového argumentu je, že pri našom návrhu funkcií vyššieho rádu nemôžeme túto funkciu napríklad parciálne aplikovať a~vytvoriť unárnu operáciu, ktorá získava prvok n-tice vždy na rovnakom indexe. Potrebovali by sme, aby sa informácia o~indexe predávala cez obyčajný argument. Podobný problém sme už vyriešili pri typoch. Vytvorili sme prázdnu šablónovú triedu, ktorú sme použili ako parameter šablónovej funkcie a~pomocou TAD sa vydedukoval typ. To isté môžeme urobiť pre hodnoty.
+%$
+\begin{code}
+template <auto v>
+struct value_t { static constexpr auto value_f() { return v; } };
+\end{code}
+%$
+Tak ako pri typoch, aj pri hodnotách bude užitočné vytvoriť z~tohoto princípu koncept. Postup je analogický k~tomu pri typoch, takže ho preskočíme. Takto by potom vyzerala implementácia \texttt{get} ako \texttt{functor}:
+%$
+\begin{code}
+get_ = [](concepts::value auto&& i, auto&& tuple)
+       { return get<PP_GV(i)>(PP_F(tuple)); };
+\end{code}
+
+\section{n-tice}
+
+Veľmi užitočnou triedou ponúkanou štandardnou knižnicou je \texttt{std::tuple}. Je často čitateľnejším nástrojom na manipulovanie s~n-ticami hodnôt ako je \emph{parameter pack}. Parameter pack je parameter, ktorý akceptuje ľubovoľný počet argumentov; píše sa s~troma bodkami, napríklad \texttt{auto\&\&...}. \texttt{std::tuple} tiež ponúka výhodu, že z~hľadiska jazyka ide o~jeden objekt. Bohužiaľ, jediný nástroj na manipulovanie s~\texttt{std::tuple}, ktorý štandardná knižnica ponúka, je \texttt{std::apply}, ktorý vo všeobecnosti aj tak vyžaduje ako argument funkciu, ktorá akceptuje parameter pack.
+
+\subsection{Koncept}
+
+Aby sme neboli obmedzení len na jednu triedu, vytvoríme nový koncept: \texttt{concepts::tuple}. Potrebovali by sme, aby sme mohli pre každý index do veľkosti n-tice zavolať nejakú prístupovú operáciu ku prvku. Zatiaľ vytvorme pomocný koncept pre prístup na \emph{jeden} index:
+%$
+\begin{code}
+template <typename T, auto I>
+concept tuple_access = requires { std::declval<T>()[value<I>]; };
+\end{code}
+%$
+Takto definovaný koncept n-tice má veľkú chybu: \texttt{std::tuple} ho nespĺňa a~ani ho splniť nijako nemôže. \texttt{operator[]} totiž musí byť vždy členskou funkciou. Toto je vedomé rozhodnutie, keďže si v~tomto projekte viac ceníme možnosť prehľadne sa odkazovať na prvky n-tice ako zjednodušenie, ktoré plynie z~už existujúcej implementácie konceptu. Minimálna implementácia konceptu by bol obal \texttt{std::tuple}, ktorého \texttt{operator[]} volá \texttt{std::get}. Aby sme mohli používať \emph{structured binding} (\texttt{auto~[x,~y] = tuple}) pre vlastnú implementáciu n-tice, budeme potrebovať špecializovať \texttt{std::tuple\_size} a~\texttt{std::tuple\_element}. Tiež je nutné implementovať funkciu get. To môžeme vďaka konceptu vyriešiť jednou implementáciou:
+%$
+\begin{code}
+template <size_t I>
+constexpr decltype(auto) get(concepts::tuple auto&& t)
+{ return PP_F(t)[value<I>]; }
+\end{code}
+
+Z potreby kontrolovať indexy do veľkosti n-tice vyplýva, že potrebujeme aj operáciu, ktorá nám vráti veľkosť n-tice. Keďže veľkosť n-tice potrebujeme poznať už pri preklade, návratový typ operácie, ktorá vráti veľkosť, potrebuje spĺňať koncept \texttt{value}. Podobne ako pri koncepte \texttt{functor}, dáme implementácii možnosť poskytnúť členskú aj namespace funkciu.
+
+Ako z~informácie o~veľkosti n-tice zistíme, či je možné získať prvky na \emph{každom} indexe? Pridáme parameter. Ak by sme ako šablónové parametre mali všetky indexy, na ktorých chceme skontrolovať prístup, koncept by sa implementoval jednoducho:
+%$
+\begin{code}
+template <typename T, auto... I>
+concept tuple_accesses = (tuple_access<T, I> && ...);
+\end{code}
+%$
+Problém je len, ako dostať do šablónového parametru hodnoty. Zase použijeme TAD. Na to potrebujeme funkciu, ktorá akceptuje nejaký šablónový typ s~indexami, nazvime ho \texttt{value\_sequence}. Bude to prázdna trieda, jediná jej informácia leží v~šablónových parametroch.
+%$
+\begin{code}
+template <auto... I>
+constexpr auto helper(concepts::type auto&& t, value_sequence<I...>)
+{ return tuple_accesses<PP_GT(t), I...>; }
+\end{code}
+%$
+S takouto pomocnou funkciou už ľahko implementujeme celý koncept.
+
+\subsubsection{\texttt{value\_sequence}}
+
+Ostáva vyriešiť, ako vytvoriť objekt šablóny \texttt{value\_sequence} z~veľkosti n\=/tice. Rekurzívne riešenie s~lineárnou zložitosťou je celkom triviálne. My vytvoríme efektívnejšiu implementáciu s~iba logaritmom volaní. Vytvoríme pomocnú funk\-ciu, ktorá zdvojnásobí dĺžku sekvencie jednoducho takto: zapíšeme ju dvakrát za sebou a~v~druhej kópii pričítame ku každému číslu dĺžku vstupnej sekvencie.
+%$
+\begin{code}
+template <auto... I>
+constexpr auto double_value_sequence(value_sequence<I...>)
+{ return value_sequence<I..., (sizeof...(I) + I)...>{}; }
+\end{code}
+%$
+S touto pomôckou je vytvorenie sekvencie s~dĺžkou $n\neq0$ iba zdvojenie sekvencie s~dĺžkou $\lfloor\frac{n}{2}\rfloor$ a~pridanie čísla $n$ na koniec, ak je nepárne.
+
+\subsection{Operácie}
+
+Pri skoro každej operácii na n-ticiach budeme potrebovať indexovať všetky prvky. Ako sme už videli, to vieme docieliť pomocnou funkciou, ktorá cez TAD vytvorí zoznam indexov ako parameter pack. Aby sme nemuseli zakaždým písať tieto pomocné funkcie, vytvoríme si abstrakciu. \texttt{std::apply} je jedným príkladom takej abstrakcie, nám sa avšak bude hodiť ísť ešte o~stupeň vyššie. Vytvoríme funktor \texttt{apply\_pack}:
+%$
+\begin{code}
+apply_pack = []<auto... I>
+             (auto&& packer, auto&& selector, value_sequence<I...>)
+                 -> decltype(auto)
+             { return unwrap_functor(PP_F(packer))
+                      (unwrap_functor(PP_F(selector))(value<I>)...); };
+\end{code}
+%$
+\texttt{selector} určuje, aký význam má daný index, \texttt{packer} je operácia, ktorú chceme nakoniec vykonať. Ekvivalent \texttt{std::apply} by potom bol:
+%$
+\begin{code}
+tuple_apply =
+    [](auto&& f, concepts::tuple auto&& t) -> decltype(auto)
+    { return apply_pack(unwrap_functor(PP_F(f)),
+                        tuple_get(partial_tag, value<1>, PP_FW(t)),
+                        tuple_value_sequence_for(PP_F(t))); };
+\end{code}
+%$
+\texttt{packer} je tu f~a \texttt{selector} je operácia, ktorá z~t vyberie prvok na danom indexe. \texttt{tuple\_value\_sequence\_for} vytvorí sekvenciu $(0, \ldots, n-1)$ pre n-ticu rozmeru $n$.
+
+\subsubsection{Mapa}
+
+Druhou operáciou, ktorú implementujeme, bude \emph{mapa}, teda funkcia vyššieho rádu, ktorá aplikuje unárnu funkciu na každý prvok n-tice. Vďaka \texttt{tuple\_apply} je implementácia vcelku triviálna. Priradíme jej operátor \texttt{+}.
+%$
+\begin{code}[fontsize=\footnotesize]
+tuple_map = [](auto&& map, concepts::tuple auto&& t)
+            { return tuple_apply([m = PP_FW(map)](auto&&... elements)
+                                 { return tuple{m(PP_F(elements))}...); },
+                                 PP_F(t)); };
+\end{code}
+%$
+
+\subsubsection{Fold}
+
+Druhá veľmi užitočná funkcia vyššieho rádu je \emph{fold}. Fold dostane binárnu operáciu, počiatočnú hodnotu a~n-ticu, a~aplikuje operáciu na prvky n-tice tak, že výsledky operácie používa zase ako vstup ďalšieho volania. Budeme uvažovať iba ľavý fold; vytvoriť z~neho abstraktnejšiu funkciu, ktorá akceptuje parameter o~smere, je triviálne, pôjde iba o~pridanie pár podmienok a~vytvorenie dvoch zrkadlových verzií rovnakých konštruktov. 
+
+Vyžadujeme, aby tieto dva zápisy boli ekvivalentné:
+%$
+\begin{code}
+int f(int a, int b);
+
+auto result1 = f(f(f(0, 1), 2), 3);
+// ~
+auto result2 = tuple_foldl(f, 0, tuple(1, 2, 3));
+\end{code}
+%$
+Tento príklad by sa mohol zdať ako dostatočná podmienka na vytvorenie korekt\-nej funkcie. Vytvorme ale trochu zvláštnejšie \texttt{f}.
+%$
+\begin{code}
+struct S
+{   int x;
+    S(int x) : x(x) { std::cout << x; }
+    S(const& S) = delete;
+    S(S&&) = delete;
+};
+S f(S, int x);
+
+auto result1 = f(f(f(S(0), 1), 2), 3);
+// ~ ?
+auto result2 = tuple_foldl(f, S(0), tuple(1, 2, 3));
+\end{code}
+%$
+Vytvorili sme triedu, ktorá sa nedá kopírovať, no aj tak je vďaka mechanizmu \emph{copy elision} použiteľná. Copy elision je vynechanie volania konštruktoru v~prípade, že na miesto, ktoré očakáva hodnotu, vložíme výraz kategórie \emph{prvalue} rovnakého typu. Výraz s~kategóriou prvalue je napríklad volanie konštruktoru alebo volanie funkcie s~hodnotovým návratovým typom. Vynechanie volania znamená, že konštruktor vôbec nemusí byť dostupný. Ak si zadáme úlohu takto, je neriešiteľná. Ak \texttt{tuple\_fold} nie je makro preprocesora, musí akceptovať počiatočnú premennú ako parameter a~potom ju nejakým spôsobom forwardovať funkcii \texttt{f}. V~tomto procese sa nutne stratí prvalue vlastnosť tejto hodnoty. S malou obmenou by sa zadanie splniť už dalo.
+%$
+\begin{code}
+auto result1 = f(f(f(S(0), 1), 2), 3);
+// ~
+auto result2 = tuple_foldl(f, [](){ return S(0); }, tuple(1, 2, 3));
+\end{code}
+
+Použijeme mechanizmus jazyka, ktorý dokáže urobiť fold na parameter packu. Bohužiaľ, \Cpp{} je schopné robiť fold iba cez operátor. Definujeme si teda vlastný, do ktorého vložíme aj trik s~bezparametrickým funktorom.
+%$
+\begin{code}
+template <typename F, typename I> struct fold_wrap { F&& f; I i; };
+template <typename F, typename I> fold_wrap(F&&, I) -> fold_wrap<F, I>;
+
+template <typename F, typename T>
+constexpr auto operator||(fold_wrap<F, T> w, auto&& ee)
+{ return fold_wrap{PP_F(w.f),
+                   [f = PP_FW(w.f), i = w.i, e = PP_FW(ee)]()
+                       -> decltype(auto)
+                   { return f--(i(), e--); }}; }
+\end{code}
+%$
+V capture nemôžeme ukladať referenciu na celý objekt \texttt{w}, keďže je parametrom funkcie, teda je dočasný. Na \texttt{w.f} a~\texttt{ee} referencie držať môžeme, tieto objekty existujú pred aj po volaní operátoru \texttt{||}. \texttt{i} musíme kopírovať, pretože ide o~subobjekt dočasného \texttt{w}. Kopírovať ho je bezpečné, pretože jeho obsah sú iba referencie a~objekt funktoru z~predošlej iterácie. Zaujímavé je tu ešte, že pri volaní \texttt{f} je potrebné použiť \texttt{-{}-} a~pri volaní \texttt{i} používame operátor volania definovaný vo \texttt{forward\_wrap}. Zase ide o~problém s~copy elision: ak by sme volali funkciu nepriamo cez operátor volania, stratili by sme prvalue kategóriu výrazu.
+
+S takto definovaným operátorom je potom implementácia nášho fold veľmi krátka:
+%$
+\begin{code}
+tuple_foldl =
+    [](auto&& ff, auto&& ii, concepts::tuple auto&& t)
+    { return tuple_apply(
+          [f = PP_FW(ff), i = PP_FW(ii)]
+          (auto&&... e) -> decltype(auto)
+          { return (fold_wrap{f--, i} || ... || PP_F(e)).i(); },
+          PP_F(t)); };
+\end{code}
+
+\subsubsection{Ostatné}
+
+Prešli sme dve najzákladnejšie operácie spájajúce funktory a~n-tice. S týmito nástrojmi môžeme jednoducho vytvoriť ďalšie operácie na n-ticiach, ako napríklad \emph{zip}, kartézsky súčin, mapovanie n-tice do poľa, zreťazenie a~\emph{find}. Implementáciu týchto operácií uvádzať už nebudeme, pretože sa pri nich už nevyskytujú tak zaujímavé nápady.
+
+\section{\texttt{constexpr}}
+
+Ďalšia \uv{diera} v~štandardnej knižnici, ktorú \PP{} zapĺňa, je chýbajúca podpora \texttt{constexpr} v~implementácii niektorých konštruktov. Pri ukážkach kódu v~tejto časti pôjde iba o~výber najzaujímavejších častí, nie o~úplnú implementáciu.
+
+\subsection{Výnimky}
+
+V implementáciách nebudeme zotavovať stav objektov pri výnimkách. Označenia \texttt{noexcept} sú správne, ale pri volaní funkcií, ktoré môžu vyhodiť výnimku, nie je zaručený stav objektu, ak sa výnimka vyhodí. Toto rozhodnutie sme urobili s~cieľom ušetriť čas na triviálnych častiach projektu. Dbali sme na to, aby sme pri návrhu vytvorili priestor pre správnu implementáciu, ktorá by zvládala aj výnimky.
+
+\subsection{\texttt{static\_block}}
+
+\emph{Kontajnery} sú štruktúry, ktoré reprezentujú množinu prvkov jedného typu. Budeme sa zaoberať tými, ktoré držia prvky v~súvislej pamäti. Takéto kontajnery si vždy pamäť alokujú vopred, aby sa vyhli zbytočne častým alokáciám. Počtu prvkov, ktoré by sa do danej štruktúry zmestili bez novej alokácie sa hovorí \emph{kapacita}. Ich pamäť môže byť \emph{dynamická} (heap) alebo \emph{statická} (stack).
+
+Najprv sa budeme zaoberať statickou pamäťou. Vytvoríme pomocnú triedu \texttt{static\_block}, ktorá bude reprezentovať súvislú silno typovanú neinicializovanú statickú pamäť. Úloha konštruovať objekty v~tejto pamäti pripadá na užívateľa tejto triedy.
+
+Problém statickej alokácie súvislej pamäti a~\texttt{constexpr} je, že ak chceme alokovať bez inicializácie, musíme alokovať iba pole bajtov. Ak by sme alokovali ako pole typu, ktorý ukladáme, prvky poľa by sa všetky skonštruovali. Pre prístup do pamäte vytvorenej ako pole bajtov kontajneru potrebujeme \texttt{reinterpret\_cast}, ktorý v~\texttt{constexpr} kontexte nie je povolený. 
+
+Keďže alokácia cez štandardný alokátor povolená v~\texttt{constexpr} je, toto obmedzenie obídeme tak, že ak je \texttt{static\_block} vytvorený v~\texttt{constexpr} kontexte, alokujeme \uv{dynamicky} (táto alokácia nebude skutočne dynamická, keďže musí nastať už pri preklade).
+
+Problém je, že na objekte vytvorenom v~\texttt{constexpr} kontexte sa stále dajú volať funkcie mimo tohto kontextu. Preto si musíme informáciu o~tom, ako bol objekt vytvorený, uložiť. To síce narúša bajtovú štruktúru, no to sme nepovažovali v~tejto knižnici za prioritu.
+%$
+\begin{code}[fontsize=\footnotesize]
+template <typename T, size_t Count>
+class static_block
+{   union { alignas(T) char buffer[Count * sizeof(T)];
+            T* constexpr_ptr; };
+    bool constant_created;
+public:
+    constexpr static_block() noexcept : buffer(), constant_created(false)
+    {   if (std::is_constant_evaluated())
+        {   constexpr_ptr = allocator<T>().allocate(Count);
+            constant_created = true; } }
+        
+    constexpr ~static_block() noexcept
+    {   if (constant_created)
+            allocator<T>().deallocate(constexpr_ptr, Count); }
+
+    constexpr T* begin() noexcept
+    {   if (constant_created) return constexpr_ptr;
+        else                  return reinterpret_cast<T*>(buffer); }
+    
+    // begin() const, end(), end() const
+    
+    constexpr auto count() const noexcept { return Count; } };
+\end{code}
+
+\subsection{\texttt{optional}}
+
+Prvou štandardnou štruktúrou podporujúcou \texttt{constexpr}, ktorú implementujeme, je \texttt{optional}. Na \texttt{optional} sa dá pozerať ako na kontajner s~kapacitou 1, ktorý alokuje statickú pamäť. Použijeme v~ňom teda \texttt{static\_block}.
+
+Jeden \texttt{constexpr} problém, ktorý potrebujeme pri \texttt{optional} vyriešiť, je konštruovanie. Ak máme alokovanú pamäť, v~ktorej nie je skonštruovaný objekt, môžeme ho na mieste vytvoriť pomocou \emph{placement new}. Tento výraz akceptuje adresu, nič nealokuje a~skonštruuje objekt na zadanom mieste. Bohužiaľ, funkcia, ktorá sa pri takom výraze volá, nie je \texttt{constexpr}. Štandard ale ponúka od verzie \Cpp{}20 funkciu s~ekvivalentným chovaním, ktorá \texttt{constexpr} je, \texttt{std::construct\_at}.
+
+Rozhranie je podmnožinou toho štandardného, pretože nie všetky metódy boli pri tomto projekte potrebné. Táto ukážka obsahuje iba najpodstatnejšie časti implementácie:
+%$
+\begin{code}[fontsize=\footnotesize]
+template <typename T>
+class optional
+{   static_block<T, 1> block;
+    bool valid;
+
+public:
+    constexpr optional() : block(), valid(false) {}
+    constexpr optional(TAG, auto&&... args) : block(), valid(true)
+    { construct(PP_FORWARD(args)...); }
+    
+private:
+    constexpr void destroy() { if (valid) get_ptr()->~T(); }
+
+    constexpr void construct(auto&&... args)
+    { std::construct_at(get_ptr(), F(args)...); } };
+\end{code}
+
+Zaujímavý je konštruktor, ktorý prijíma ako prvý parameter typ \texttt{TAG}. Tento typ je prázdny a~slúži iba na odlíšenie od copy a~move konštruktorov pri overload resolution. To dovoľuje užívateľovi vynútiť konštruovanie vnútorného objektu, hoci typ argumentu lepšie sedí na iný konštruktor. Je to princíp, ktorý tu nemá veľké využitie, ale využívame ho v~celej knižnici pri problémoch s~nesprávnym výberom v~overload resolution.
+
+\subsection{\texttt{unique\_pointer}}
+
+Ďalej vytvoríme pomocnú triedu pre dynamickú pamäť. Najprimitívnejší konštrukt, ktorý na prácu s~dynamickou pamäťou štandardná knižnica ponúka je \texttt{std::unique\_ptr}. Jeho zmyslom je, že zabezpečuje volanie \texttt{delete} pomocou princípu \emph{RAII}. Tento princíp znamená prakticky to, že zdroje --- v~tomto prípade pamäť --- získavame v~konštruktore a~uvoľňujeme ich v~deštruktore. Tým, že lokálne premenné sa deštruujú na konci ich bloku, dostaneme automatické uvoľňovanie zdrojov. Chybou \texttt{std::unique\_ptr} je, že nemá \texttt{constexpr} konštruktory, teda vytvoríme vlastný ekvivalent.
+
+\texttt{std::unique\_ptr} má ešte jednu vlastnosť. Tou je unikátnosť v~tom zmysle, že každý objekt \texttt{std::unique\_ptr}, ktorý spravuje nejakú pamäť, je jej jediným \emph{správcom}. Pod pojmom správca rozumieme, že je sémanticky zodpovedný za uvoľnenie danej pamäti.
+
+Tieto dva princípy, RAII a~unikátnosť, možno implementovať abstraktne v~pomocných triedach.
+
+\subsubsection{scoped}
+
+Všetky triedy, ktoré využívajú princíp RAII, potrebujú vykonať operáciu, ktorá uvoľňuje zdroje, pri priradení a~v~deštruktore. Túto operáciu uložíme ako funktor.
+%$
+\begin{code}[fontsize=\footnotesize]
+template <typename T, typename Destructor>
+class scoped
+{   compressed_pair<T, Destructor> pair;
+
+public:
+    constexpr scoped& operator=(const scoped& other)
+    {   if (this != &other) { destroy(); //... }
+        return *this; }
+        
+    constexpr ~scoped() { destroy(); }
+	
+private:
+    constexpr void destroy() { pair.second(pair.first); } };
+\end{code}
+
+\texttt{compressed\_pair} označuje triedu, ktorá funguje ako obyčajná dvojica, až na prípad, kedy je niektorá z~obsiahnutých tried prázdna. Vtedy optimalizuje, a~táto prázdna trieda v~dvojici nezaberá žiadne miesto. Toto je veľmi užitočná optimalizácia, pretože \texttt{Destructor} bude v~absolútnej väčšine použití tejto triedy prázdna trieda. Vďaka tomu je použitie \texttt{scoped} oproti vlastnej implementácii RAII deštruktoru a~operátoru priradenia \uv{zadarmo}.
+
+\subsubsection{movable}
+
+Zmyslom využitia move sémantiky je väčšinou \uv{vykradnutie} objektu, ktorý je argumentom. \texttt{movable} objekt bude teda držať funktor, ktorý pri volaní akceptuje objekt na vykradnutie, vykradne ho a~vráti nový objekt rovnakého typu, ktorý drží zdroje pôvodného objektu.
+
+%$
+\begin{code}[fontsize=\footnotesize]
+template <typename T, typename Releaser>
+class movable
+{   compressed_pair<T, Releaser> pair;
+
+public:
+    movable() = default;
+    constexpr movable(const movable& other)
+        : pair(other.pair.first, other.pair.second) {}
+    constexpr movable(movable&& other)
+        : pair(other.release(), move(other).pair.second) {}
+
+    constexpr T release() noexcept { return pair.second(pair.first); }
+};
+\end{code}
+%$
+Je zopár typov pre \texttt{Releaser}, ktoré pokrývajú väčšinu použití \texttt{movable}, preto ich implementujeme dopredu.
+%$
+\begin{code}[fontsize=\footnotesize]
+struct default_releaser
+{   template <typename T>
+    constexpr auto operator()(T& x) { return exchange(x, T()); } };
+    
+struct zero_releaser
+{   constexpr auto operator()(auto& x) { return exchange(x, 0); } };
+    
+struct nullptr_releaser
+{   constexpr auto operator()(auto& x) { return exchange(x, nullptr); } };
+
+struct move_releaser
+{   constexpr auto operator()(auto& x) { return move(x); } };
+\end{code}
+
+\subsubsection{pointer}
+
+Pripomeňme si cieľ: implementovať \texttt{constexpr} \texttt{std::unique\_ptr}. Štandardne má táto trieda dve verzie: jedna alokuje jeden objekt, druhá alokuje pole objektov. Obe alokácie sa vykonávajú pomocou výrazu \texttt{new}. Pre potreby v~našej knižnici by sa nám hodila ešte tretia verzia, ktorá by alokovala pomocou alokátoru. Týmto trom verziám alokácie budú zodpovedať tri triedy; spoločne ich budeme nazývať \emph{pointery}. Tieto pointery budú v~\texttt{unique\_pointer} zabalené v~\texttt{movable} a~\texttt{scoped} a~spolu budú tvoriť v~podstate celú jeho implementáciu.
+
+Od pointeru teda chceme, aby: mal na starosti alokáciu, držal ukazovateľ a~bol schopný nechať sa vykradnúť. Vykradnutie bude fungovať tak, že žiadame aby sa dal objekt pointeru skonštruovať z~\texttt{nullptr}, potom vykradneme jednoduchým \texttt{std::exchange} za \texttt{nullptr}. Alokáciu budú pointery vykonávať v~konštruktore a~na dealokáciu vyžadujeme členskú funkciu. Tento popis zjavne smeruje ku zavedeniu konceptu, tým sa ale nebudeme zdržiavať.
+
+Vytvorme tri triedy pre tri typy alokácie:
+
+\begin{code}[fontsize=\footnotesize]
+template <typename T>
+class pointer_base
+{   T* ptr;
+
+public:
+    explicit constexpr pointer_base(T* ptr) noexcept : ptr(ptr) {}
+    constexpr pointer_base(nullptr_t) noexcept : ptr(nullptr) {}
+};
+template <typename T>
+struct pointer_new : public pointer_base<T>
+{   constexpr pointer_new(TAG, auto&&... args)
+        : pointer_base<T>(new T(F(args)...)) {}
+
+    constexpr void deallocate() { delete this->ptr; }
+};
+template <typename T>
+struct pointer_new_array : public pointer_base<T>
+{   explicit constexpr pointer_new_array(size_t count)
+        : pointer_base<T>(new T[count]) {}
+
+    constexpr void deallocate() { delete[] this->ptr; }
+};
+template <typename T, typename A>
+class pointer_allocate : public pointer_base<T>
+{   compressed_pair<size_t, A> pair;
+
+public:
+    constexpr pointer_allocate(nullptr_t)
+        : pointer_base<T>()
+        , pair(0, A()) {}
+
+    constexpr pointer_allocate(auto&& allocator, size_t count)
+        : pointer_base<T>(PP_F(allocator).allocate(count))
+        , pair(count, F(allocator)) {}
+
+    constexpr size_t count() const noexcept { return pair.first; }
+
+    constexpr void deallocate()
+    { if (this->ptr) pair.second.deallocate(this->ptr, count()); }
+};
+\end{code}
+%$
+V tejto ukážke vynechávame schopnosť pointerov vytvoriť sa z~pointeru ukazujúceho na objekt potomka, keďže ide o~zbytočne dlhú a~nezaujímavú časť implementácie.
+
+\subsubsection{\texttt{unique\_pointer}}
+
+Implementácia je vďaka vytvoreným konštruktom už triviálna.
+%$
+\begin{code}[fontsize=\footnotesize]
+struct deleter
+{   constexpr void operator()(auto& wrapped_ptr) const
+    {   auto& ptr = wrapped_ptr.get_object();
+        ptr.deallocate();
+        ptr = nullptr; }
+};
+template <typename Pointer>
+class unique_pointer
+{   scoped<movable<Pointer, nullptr_releaser>, unique_pointer_deleter> p;
+
+public:
+    unique_pointer() = default;
+    unique_pointer(unique_pointer&& other) = default;
+    unique_pointer& operator=(unique_pointer&& other) = default;
+    
+    unique_pointer(const unique_pointer&) = delete;
+    unique_pointer& operator=(const unique_pointer&) = delete;
+};
+\end{code}
+
+\subsection{\texttt{dynamic\_block}}
+
+Vytvoríme \texttt{dynamic\_block}, ekvivalent \texttt{static\_block}-u pre dynamickú pamäť. Pôjde o~neinicializovaný súvislý blok bajtov. Chceme, aby nebol závislý od konkrétneho alokátoru, použijeme teda \texttt{pointer\_allocate}. Keď ten zabalíme do \texttt{unique\_pointer}, máme v~podstate \texttt{dynamic\_block} hotový. Pridáme iba metódu na vytvorenie nového bloku s~vykradnutím alokátora. Tú využijeme vo \texttt{vector}.
+%$
+\begin{code}[fontsize=\footnotesize]
+template <typename T, typename Allocator> class dynamic_block
+{   unique_pointer<pointer_allocate<T, Allocator>> ptr;
+public:
+    constexpr auto spawn_new(size_t count)
+    { return dynamic_block(move(ptr.get_object().get_allocator()), count); }
+};
+\end{code}
+
+\subsection{\texttt{vector}}
+
+Všetky doteraz vytvorené nástroje spojíme do jednej triedy, constexpr implementácie pre \texttt{vector}.
+%$
+\begin{code}[fontsize=\footnotesize]
+template <typename T, typename Allocator = std::allocator<T>>
+class vector
+{   static constexpr size_t default_capacity = 16;
+
+    dynamic_block<T, Allocator> block;
+    movable<size_t, zero_releaser> count_;
+    
+    constexpr void destroy_all() noexcept;
+public:
+    vector(vector&&) = default;
+    vector& operator=(vector&&) = default;
+    
+    constexpr ~vector() { destroy_all(); }
+    
+    constexpr void push_back(auto&&... args);
+    constexpr T pop_back();
+    constexpr void clear() noexcept;
+    constexpr void erase_until_end(const T* i) noexcept;
+    constexpr void remove(auto&& predicate); };
+\end{code}
+
+\subsection{\texttt{small\_optimized\_vector}}
+
+Ako drobné vylepšenie, ktoré ďalej demonštruje užitočnosť vytvorených pomocných konštruktov, môžeme vytvoriť vector, ktorý optimalizuje na malý počet prvkov tak, že ich ukladá do statickej pamäti: \texttt{small\_optimized\_vector}. Veľkosť statickej pamäti dostane trieda ako šablónový parameter. Túto triedu budeme často využívať v~mechanizmoch \PPreflection, keďže množiny, ako je napríklad množina funkcií zvažovaných overload resolution, majú síce teoreticky neobmedzenú veľkosť, no väčšina je veľmi malá, typicky dokonca o~veľkosti 1.
+
+Hlavná myšlienka je, že \texttt{small\_optimized\_vector} bude spravovať statickú aj dynamickú pamäť. Do veľkosti, ktorá sa zmestí do statickej pamäti, bude využívať tú; akonáhle je potrebné viac pamäti, prejde do dynamickej. Otázka je, či sa vrátiť do statického bloku, keď veľkosť zase klesne. Veľkosť vectoru pri našom použití nebude klesať nikdy, takže sme sa rozhodli, že do statickej pamäti sa tento vector už nevracia.
+
+Ukážku kódu kvôli stručnosti vynecháme.
+
+\section{Pohľady}
+
+Poslednou veľkou oblasťou, ktorú \PP{} pokrýva, sú \emph{pohľady}. Pohľad je ab\-strakt\-ný pojem, ktorý označuje postupnosť prvkov. Oproti kontajnerom je rozdiel ten, že pohľad nemusí \emph{vlastniť} svoje prvky. Väčšinou sú kontajnery zároveň aj pohľadmi.
+
+\subsection{Koncept}
+
+Súvisiaci pojem s~pohľadmi sú \emph{iterátory}. Iterátor je objekt, ktorý ukazuje na prvok v~postupnosti. V~\Cpp{} sa dajú definovať tri základné kategórie iterátorov, pričom každá rozširuje predošlú. Najslabšia kategória, \emph{forward}, vyžaduje základné vlastnosti spoločné pre všetky iterátory: \uv{posuň sa na ďalší prvok} a~\uv{vráť prvok}. \emph{Bidirectional} navyše vyžaduje operáciu, ktorá posunie iterátor na predošlý prvok. \emph{Random access} je najsilnejšou kategóriou, tá vyžaduje aj schopnosť posunúť sa o~ľubovoľný počet prvkov a~možnosť určiť vzdialenosť dvoch iterátorov. Všetky tieto operácie je zvykom volať ako operátory. Definujme si koncepty:
+%$
+\begin{code}[fontsize=\footnotesize]
+template <typename T> concept iterator = requires(T i)
+{   ++i;
+   { *i } -> non_void;
+};
+template <typename T> concept iterator_bi = iterator<T> && requires(T i)
+{   --i;
+};
+template <typename T> concept iterator_ra = iterator_bi<T> && requires(T i)
+{   i += ptrdiff_t(0);
+    { i[ptrdiff_t(0)] } -> non_void;
+    i - i;
+};
+\end{code}
+
+Ďalej vytvorme koncept \texttt{view}. Od pohľadu žiadame, aby sa na ňom dali zavolať funkcie \texttt{begin} a~\texttt{end} (členské alebo namespace), ktoré nám definujú hranice pohľadu. Ďalej potrebujeme, aby \texttt{begin} vracala iterátor. Od \texttt{end} by sme mohli tiež vyžadovať, aby vracal iterátor. To je ale zbytočne silná podmienka, ktorú nebudú schopné všetky inak zmysluplné pohľady splniť. Uvažujme najbežnejšie použitie pohľadov: iterácia cez všetky prvky. To, či sme na konci pohľadu, určíme rovnosťou medzi iterátorom začiatku, ktorým pohybujeme dopredu, a~\uv{iterátorom} konca. Na koniec v~tomto použití teda vôbec nemusí ukazovať iterátor. Vytvoríme koncept sentinel, ktorý toto chovanie zachytáva:
+%$
+\begin{code}
+template <typename S, typename I>
+concept sentinel = iterator<I> && equatable<I, S>;
+\end{code}
+%$
+\texttt{sentinel} je binárna relácia iterátoru a~ľubovoľného typu, ktorá hovorí, že iterátor možno porovnať s~daným typom na rovnosť. Pri iterácii cez pohľad teda stačí vyžadovať, aby koniec vyznačoval iba sentinel iterátoru začiatku.
+%$
+\begin{code}[fontsize=\footnotesize]
+template <typename T> concept view = requires
+{   { BEGIN(declval<T>()) } -> iterator;
+    { END(declval<T>()) } -> sentinel<decltype(BEGIN(std::declval<T>()))>;
+};
+\end{code}
+%$
+\texttt{BEGIN} a~\texttt{END} označujú volanie funkcie s~menom begin, resp. end, ktorá je buď členská bez parametrov, alebo namespace s~jedným parametrom.
+
+Koncept s~týmto významom sa nachádza aj v~štandardnej knižnici, no v~čase začiatku vývoja tohoto projektu ešte nebola implementácia v~prekladačoch hotová. Koncept sme ale vytvorili takmer ekvivalentne, takže naše triedy, ktoré spĺňajú view, možno použiť v~\emph{range-based} for cykle a~všetky štandardné kontajnery spĺňajú náš koncept.
+
+\subsubsection{\texttt{simple\_view}}
+
+Najprimitívnejším spôsobom, ako vytvoriť pohľad, je použiť dvojicu iterátorov. Jeden určuje začiatok pohľadu, druhý jeho koniec. Pre takýto pohľad vytvoríme triedu \texttt{simple\_view}. Niekedy je jednoduchšie vytvoriť namiesto triedy pohľadu iba triedu iterátoru s~porovnaním, takže vtedy je možné zabaliť dva také iterátory do \texttt{simple\_view}, a~tým splniť koncept \texttt{view}.
+
+\subsection{Operácie}
+
+Je mnoho operácií, ktoré knižnica \PP{} na pohľadoch implementuje. V~tejto časti ukážeme iba tie tri, ktoré budeme neskôr potrebovať v~\PPreflection{}: transformácia, zreťazenie a~zip.
+
+Všetky tieto operácie budú mať spoločnú vlastnosť: ide o~operácie na objektoch pohľadov, nie na prvkoch pohľadov samotných. Tomuto princípu sa hovorí \emph{lazy evaluation}; operácia na prvkoch --- ak sa nejaká má stať --- sa stane až pri iterácii cez pohľad.
+
+\subsubsection{Transformácia}
+
+Transformácia pohľadu je lazy mapovanie prvkov pohľadu. Argumentom je pohľad a~unárna operácia. Základnou myšlienkou \texttt{transform\_view} je vytvoriť iterátor, ktorý --- podobne ako \texttt{movable} a~\texttt{scoped} --- obsahuje \texttt{compressed\_pair} iterátoru z~pôvodného pohľadu a~funktoru. Pri dereferencii iba zavoláme funktor. Pohľad z~tohoto iterátoru vytvoríme pomocou \texttt{simple\_view}.
+
+\begin{code}
+template <typename I, typename T>
+class transform_iterator
+{   compressed_pair<I, T> pair;
+public:
+    constexpr decltype(auto) operator*() const
+    { return pair.second(*pair.first); }
+
+    constexpr void step() { ++pair.first; } };
+\end{code}
+
+\subsubsection{Zreťazenie}
+
+Pri zreťazení nebude nastávať žiadna transformácia prvkov, potrebujeme sa len chovať k~dvom pohľadom ako k~jednému, pričom prvý prvok druhého pohľadu nasleduje za posledným prvkom pohľadu prvého. To docielime zase vytvorením iterátoru a~následným zabalením do \texttt{simple\_view}. Tento iterátor si bude pamätať začiatok a~koniec prvého pohľadu a~začiatok druhého. Najprv posúva začiatok prvého, ak sa rovná začiatok a~koniec prvého pohľadu, začne posúvať začiatok druhého.
+%$
+\begin{code}
+template <typename I, typename E, typename J>
+class view_chain_iterator
+{   I i; E e; J j;
+public:
+    constexpr void step()
+    {   if (i != e) ++i;
+        else        ++j; }
+};
+\end{code}
+
+\subsubsection{Zip}
+
+Zip akceptuje $n$ pohľadov a~vytvorí jeden pohľad na $n$-ticu. Zase vytvoríme iba iterátor, ktorý zabalíme do \texttt{simple\_view}. Iterátor si bude pamätať n-ticu začiatkov pohľadov. Krok dopredu posunie postupne každý iterátor v~n-tici. Dereferencia mapuje n-ticu iterátorov na n-ticu dereferencovaných prvkov. Implementácia tejto triedy je veľmi jednoduchá vďaka vopred vytvoreným operáciám na n-ticiach.
+%$
+\begin{code}
+template <typename... I>
+struct zip_iterator : tuple<I...>
+{   constexpr auto operator*() const { return der + *this; }
+    constexpr void step() { tuple_for_each(ipr, *this); }
+};
+\end{code}
+%$
+\texttt{der} a~\texttt{ipr} označujú funktory pre \texttt{operator*} a~\texttt{operator++}, respektíve.
+
+\subsection{\texttt{any\_iterator}}
+
+Pomôckou, ktorú budeme často využívať v~\PPreflection{}, je \texttt{any\_iterator}. Je to trieda, ktorá poskytuje jednotný objekt pre iterátory rovnakej kategórie vracajúce (takmer) rovnaký typ.
+
+Napríklad, do \texttt{any\_iterator<iterator\_category::bi, int\&>} chceme priradiť iterátory z~\texttt{std::list<int>} aj \texttt{std::set<int>}.
+
+Využijeme základný princíp objektovo orientovaného programovania: dedičnosť. Iterátory na rôzne kontajnery spoločného predka nemajú, ale môžeme si vytvoriť obalovú šablónovú triedu pre každý typ iterátoru, ktorej jedného predka určiť môžeme. Tento princíp sa v~\Cpp{} nazýva \emph{type erasure}. Spoločný predok bude predpisovať očakávané virtuálne funkcie, ako je napríklad \uv{krok dopredu} alebo dereferencia. Samozrejme, dereferencia je trochu problematická, pretože nevieme, aký typ vrátiť. Preto bude predok šablónový, podľa typu, ktorý vracia dereferencia. Navyše, existuje viacero kategórií iterátorov, pričom každá rozširuje rozhranie predošlej --- preto bude druhý parameter kategória.
+%$
+\begin{code}[fontsize=\footnotesize]
+template <IC Category, typename T> class AI_BASE {};
+
+template <typename T>
+struct any_iterator_base<IC::fw, T> : AI_BASE<IC::fw, T>
+{   constexpr virtual T dereference() const = 0;
+    constexpr virtual void increment() = 0;
+    constexpr virtual bool equal(const AI_BASE&) const = 0;
+    constexpr virtual ~any_iterator_base() {}
+};
+template <typename T>
+struct any_iterator_base<IC::bi, T> : any_iterator_base<IC::bi, T>
+{   constexpr virtual void decrement() = 0;
+};
+template <typename T>
+struct any_iterator_base<IC::ra, T> : any_iterator_base<IC::ra, T>
+{   constexpr virtual void advance(ptrdiff_t) = 0;
+    constexpr virtual T index(ptrdiff_t) const = 0;
+    constexpr virtual ptrdiff_t diff(const any_iterator_base&) const = 0;
+};
+\end{code}
+
+Vytvorenie obalu pre konkrétny typ iterátoru je už celkom priamočiare. Najprv treba určiť jeho kategóriu a~typ dereferencie, tak určíme predka. Potom už len treba implementovať virtuálne funkcie. Malým problémom je implementácia binárnych funkcií \uv{porovnanie} a~\uv{rozdiel}. Implementujúca trieda by mohla použiť \texttt{dynamic\_cast} na \texttt{other} aby zistila, či je rovnakého typu; ak je, tak môže porovnať. Tieto funkcie by normálne mali fungovať aj na rôzne typy. Toto umožníme tak, že do obalových tried pridáme šablónový parameter pack, ktorý bude značiť iné kompatibilné iterátorové typy. Obal potom prejde okrem svojho typu aj tieto typy a~postupne vyskúša \texttt{dynamic\_cast}.
+
+\texttt{any\_iterator} bude teda obsahovať \texttt{unique\_pointer} na predka, ktorý bude v~skutočnosti ukazovať na nejaký obal konkrétneho iterátoru. Operátory, ktoré sa od neho očakávajú, budú volať virtuálne funkcie cez \texttt{unique\_pointer}.
+
+\subsubsection{\texttt{any\_view}}
+
+Kvôli osobitostiam triedy \texttt{any\_iterator}, špeciálne kvôli nutnosti menovať iné porovnateľné typy a~dynamickej alokácii, nie je vhodné \texttt{any\_iterator} vkladať do \texttt{simple\_view}. Preto vytvoríme samostatnú triedu \texttt{any\_view}, ktorá bude požiadavky pohľadu spĺňať trochu sofistikovanejšie.
+
+\section{\texttt{ostream}}
+
+V projekte budeme potrebovať vypisovať mená deskriptorov na výstup. Cieľ nám zadáva označiť čo najviac funkcií \texttt{constexpr}. \texttt{std::ostream} \texttt{constexpr} nie je, preto si vytvoríme vlastné rozhranie. Použitie \texttt{any\_view} pri výstupe nie je optimálne, efektívnejšie by bolo predávať text napríklad ako ukazovateľ na znaky. Použitím \texttt{any\_view} ale získavame možnosť predať funkcii ľubovoľný pohľad na znaky.
+
+\begin{code}
+struct ostream
+{ constexpr virtual void write(any_view<IC::fw, char>) noexcept = 0; };
+\end{code}

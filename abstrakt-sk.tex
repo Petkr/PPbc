@@ -1,0 +1,21 @@
+%%% Šablona pro jednoduchý soubor formátu PDF/A, jako treba samostatný abstrakt práce.
+
+\documentclass[12pt]{report}
+
+\usepackage[a4paper, hmargin=1in, vmargin=1in]{geometry}
+\usepackage[a-2u]{pdfx}
+\usepackage[czech]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{textcomp}
+
+\newcommand{\Cpp}{C\texttt{++}}
+
+\begin{document}
+
+% Nezapomeňte upravit abstrakt.xmpdata.
+
+Introšpekcia a reflexia sú silné programovacie nástroje umožňujúce všeobecné riešenie problematických úloh, ako napríklad multiple dispatch alebo serializácia. V \Cpp{} je podpora pre introšpekciu veľmi slabá a~reflexia nie je možná vôbec. Štandard jazyka sa za posledné obdobie značne rozvinul, vďaka čomu je už možné do jazyka tieto mechanizmy doplniť vlastným rozšírením. Výsledkom tejto práce je knižnica pre introšpekciu pracujúca s~metadátami vygenerovanými zo zdrojového textu a~generátor týchto metadát ako nástroj nad prekladačom. Funkčnosť celého systému je demonštrovaná implementáciou mechanizmu multiple dispatch, ktorý nie je jednoducho implementovateľný v~štandardnom \Cpp{}.
+
+\end{document}

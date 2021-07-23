@@ -57,13 +57,29 @@
 \usepackage{paralist}       % lepší enumerate a itemize
 \usepackage{xcolor}         % barevná sazba
 
+\usepackage{float}
+\usepackage{dirtree}
+
+\usepackage{tikz}           % diagramy
+\usepackage{tikz-uml}       % UML diagramy
+\usetikzlibrary{backgrounds}
+
+\tikzstyle{subor} = [rectangle, rounded corners, minimum width=3cm, minimum height=1cm, text centered, draw=black, fill=black!10]
+\tikzstyle{exe} = [rectangle, rounded corners, minimum width=3cm, minimum height=1cm, text centered, draw=black, fill=blue!30]
+\tikzstyle{proces} = [rectangle, minimum width=2.6cm, minimum height=1cm, text centered, text width=2cm, draw=black, fill=yellow!30]
+\tikzstyle{library} = [ellipse, minimum width=3.5cm, minimum height=1cm, text centered, draw=black, fill=red!20]
+\tikzstyle{arrow} = [thick,->,>=stealth]
+
+\usepackage[shortcuts]{extdash}
+\usepackage{enumitem}
+
 %%% Údaje o práci
 
 % Název práce v jazyce práce (přesně podle zadání)
-\def\NazevPrace{Systém pro introspekci v C++}
+\def\NazevPrace{Systém pre introšpekciu v \Cpp{}}
 
 % Název práce v angličtině
-\def\NazevPraceEN{A system for introspection in C++}
+\def\NazevPraceEN{A system for introspection in \Cpp{}}
 
 % Jméno autora
 \def\AutorPrace{Peter Fačko}
@@ -101,18 +117,18 @@
 
 % Abstrakt (doporučený rozsah cca 80-200 slov; nejedná se o zadání práce)
 \def\Abstrakt{%
-Introspekcia a reflexia sú silné programovacie nástroje umožňujúce všeobecné riešenie problematických úloh, ako napríklad multiple dispatch alebo serializácia. V C++ je podpora pre introspekciu veľmi slabá a~reflexia nie je možná vôbec. Cieľom tejto práce je vytvoriť knižnicu pre introspekciu, pracujúcu s~metadátami vygenerovanými zo zdrojového textu, a~vytvoriť generátor týchto metadát ako nástroj nad prekladačom. Funkčnosť celého systému demonštrujeme implementáciou multiple dispatch, ktorý nie je implementovateľný v~štandardnom C++.
+Introšpekcia a reflexia sú silné programovacie nástroje umožňujúce všeobecné riešenie problematických úloh, ako napríklad multiple dispatch alebo serializácia. V~\Cpp{} je podpora pre introšpekciu veľmi slabá a~reflexia nie je možná vôbec. Štandard jazyka sa za posledné obdobie značne rozvinul, vďaka čomu je už možné do jazyka tieto mechanizmy doplniť vlastným rozšírením. Výsledkom tejto práce je knižnica pre introšpekciu pracujúca s~metadátami vygenerovanými zo zdrojového textu a~generátor týchto metadát ako nástroj nad prekladačom. Funkčnosť celého systému je demonštrovaná implementáciou mechanizmu multiple dispatch, ktorý nie je jednoducho implementovateľný v~štandardnom \Cpp{}.
 }
 \def\AbstraktEN{%
-Introspection and reflection are powerful programming tools that allow generic solutions for difficult problems such as multiple dispatch or serialization. In C++, the support for introspection is seriously limited, while reflection is virtually non-existent. The goal of this thesis is the creation of an introspection library working with metadata generated from source code and the creation of a compiler-based metadata generator. The functionality of the whole system shall be demonstrated by implementing multiple dispatch which is not implementable in standard C++.
+Introspection and reflection are powerful programming tools that allow generic solutions for difficult problems such as multiple dispatch or serialization. In \Cpp{}, the support for introspection is seriously limited, while reflection is virtually non-existent. The language standard has been developing significantly in recent past and thus it is now possible to extend the language with those features using a custom tool. The result of this thesis is an introspection library working with metadata generated from source code and a compiler-based metadata generator. The functionality of the whole system shall be demonstrated by implementing multiple dispatch, for which there is no simple implementation in standard \Cpp{}.
 }
 
 % 3 až 5 klíčových slov (doporučeno), každé uzavřeno ve složených závorkách
 \def\KlicovaSlova{%
-{introspekcia} {C++} {analýza zdrojových textov}
+{introšpekcia} {\Cpp{}} {analýza zdrojových textov}
 }
 \def\KlicovaSlovaEN{%
-{introspection} {C++} {source-code analysis}
+{introspection} {\Cpp{}} {source-code analysis}
 }
 
 %% Balíček hyperref, kterým jdou vyrábět klikací odkazy v PDF,
@@ -133,10 +149,13 @@ Introspection and reflection are powerful programming tools that allow generic s
 \tableofcontents
 
 %%% Jednotlivé kapitoly práce jsou pro přehlednost uloženy v samostatných souborech
-\include{uvod}
-\include{kap01}
-
-\include{zaver}
+\include{k1_uvod}
+\include{k2_suvisiace_prace}
+\include{k3_PP}
+\include{k4_navrh}
+\include{k5_pouzitie}
+\include{k6_vysledky}
+\include{k7_zaver}
 
 %%% Seznam použité literatury
 \include{literatura}
@@ -151,7 +170,7 @@ Introspection and reflection are powerful programming tools that allow generic s
 
 %%% Použité zkratky v bakalářské práci (opět nemusí být nutné uvádět)
 %%% U matematických prací může být lepší přemístit seznam zkratek na začátek práce.
-\chapwithtoc{Zoznam použitých skratiek}
+%\chapwithtoc{Zoznam použitých skratiek}
 
 %%% Přílohy k bakalářské práci, existují-li. Každá příloha musí být alespoň jednou
 %%% odkazována z vlastního textu práce. Přílohy se číslují.
@@ -163,10 +182,10 @@ Introspection and reflection are powerful programming tools that allow generic s
 %%% interaktivní grafy apod.). Elektronické přílohy se nahrávají do SISu a lze
 %%% je také do práce vložit na CD/DVD. Povolené formáty souborů specifikuje
 %%% opatření rektora č. 72/2017.
-\appendix
-\chapter{Prílohy}
+%\appendix
+%\chapter{Prílohy}
 
-\section{Prvá príloha}
+%\section{Prvá príloha}
 
 \openright
 \end{document}

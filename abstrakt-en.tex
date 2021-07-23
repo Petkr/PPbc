@@ -1,0 +1,21 @@
+%%% Šablona pro jednoduchý soubor formátu PDF/A, jako treba samostatný abstrakt práce.
+
+\documentclass[12pt]{report}
+
+\usepackage[a4paper, hmargin=1in, vmargin=1in]{geometry}
+\usepackage[a-2u]{pdfx}
+\usepackage[czech]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{textcomp}
+
+\newcommand{\Cpp}{C\texttt{++}}
+
+\begin{document}
+
+% Nezapomeňte upravit abstrakt.xmpdata.
+
+Introspection and reflection are powerful programming tools that allow generic solutions for difficult problems such as multiple dispatch or serialization. In \Cpp{}, the support for introspection is seriously limited, while reflection is virtually non-existent. The language standard has been developing significantly in recent past and thus it is now possible to extend the language with those features using a custom tool. The result of this thesis is an introspection library working with metadata generated from source code and a compiler-based metadata generator. The functionality of the whole system shall be demonstrated by implementing multiple dispatch, for which there is no simple implementation in standard \Cpp{}.
+
+\end{document}

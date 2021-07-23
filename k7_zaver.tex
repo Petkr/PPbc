@@ -1,0 +1,125 @@
+\chapter{Záver}
+
+Vytvorili sme systém pre podporu introšpekcie v~\Cpp{}. Nie je potrebné upravovať prekladač, keďže doplnenie jazyka sa vykonáva generáciou zdrojového textu, ktorý dopĺňa potrebné chýbajúce informácie o~entitách jazyka. Návrhovo sa nám podarilo vytvoriť systém tak, že existujúci kód nemusí byť nijako upravený, aby mohol byť reflektovaný. Pri implementácii tohoto cieľa sme narazili na pár problémov, no sú riešiteľné bez zásadnej zmeny návrhu.
+
+Reflektujeme takmer všetky nešablónové entity jazyka. Tie entity ktoré nereflektujeme, sme sa rozhodli ignorovať z~dôvodov plynúcich z~rozsahu práce, nie kvôli implementačným problémom.
+
+Implementovali sme dynamické volanie funkcií s~takmer všetkými súvisiacimi pravidlami jazyka. Ide hlavne o~overload resolution a~implicitné konverzie. Tieto mechanizmy sú v~\Cpp{} oproti iným jazykom špeciálne zložité a~nenašli sme projekt, ktorý by v~\Cpp{} implementoval introšpekciu vrátane týchto pravidiel.
+
+Schopnosť spustiť introšpekciu v~kompilačnom čase pomocou mechanizmu \texttt{constexpr} sme umožnili všade okrem operácií súvisiacich s~dynamickým volaním funkcií. Nevyriešili sme problém, či dynamické volanie funkcií je vôbec v~princípe možné s~aktuálnym štandardom \Cpp{}20 vykonávať v~kompilačnom čase.
+
+Výkon dynamického volania funkcií sme demonštrovali v~kapitole \ref{vysledky}. Bez optimalizácie, pri ktorej je nutné uviesť všetky potenciálne kombinácie typov argumentov, sme dosiahli slabé výsledky. S optimalizáciou sú výsledky už porovnateľné s~ekvivalentným mechanizmom z~jazyka \Csharp{}, obzvlášť keď zvážime priestor, ktorý sme pre ďalšie vylepšenia v~tejto oblasti projektu vytvorili.
+
+Celkovo má projekt hneď niekoľko nedostatkov, ktoré ho činia málo použiteľným v~praktickej situácii. Pri preskúmaní týchto chýb sme zatiaľ neodhalili principiálny problém s~architektúrou alebo návrhom projektu. Veľká časť problémov je pravdepodobne spôsobená tým, že sa pohybujeme na okraji podporovaných schopností jazyka prekladačmi, teda tieto nedostatky by sa mali časom zmierniť ďalším vývojom prekladačov. Veríme, že je možné tento projekt po ďalšej práci uviesť do stavu, v ktorom by mohol byť prakticky aplikovaný.
+
+\section{Možné vylepšenia} \label{vylepsenia}
+
+V tejto kapitole rozoberieme nedostatky a~možné rozšírenia práce; preto je užitočná najmä pre potenciálnych vývojárov \PPreflection{}. Pri nedostatkoch uvedieme ich príčinu a~pri rozšíreniach uvedieme motiváciu pre implementáciu. Pri oboch uvedieme navyše aj krátky rozbor riešenia.
+
+\subsection{Dlhá kompilácia}
+
+Najväčším problémom pri aktuálnom stave práce je dlhý kompilačný čas. Na \GCC{} 11.1 trvá preklad jednej prekladovej jednotky používajúcej introšpekciu rádovo \emph{stovky} sekúnd. Na porovnanie: jednotka porovnateľného rozsahu, v~ktorej nie je použitý \PPreflection{}, sa prekladá pri rovnakých podmienkach niekoľko desatín sekundy. Takýto veľký nárast pri v~kompilačnom čase by najskôr prevážil všetky výhody použitia \PPreflection{} v~akomkoľvek rozumnom projekte, a~preto by oprava tohoto nedostatku mala dostať najvyššiu prioritu pri ďalšom vývoji.
+
+Možných dôvodov má tento problém hneď niekoľko. Prvým by mohla byť súborová štruktúra projektu. Projekt používa veľmi jemné delenie na jednotlivé hlavičkové súbory. To spôsobuje, že prekladač musí často pracovať s~diskom. Túto situáciu navyše zhoršuje fakt, že pre každú prekladovú jednotku sa čítajú hlavičkové súbory zvlášť, a~teda najskôr dochádza k~zbytočnému opakovaniu rovnakej práce, keďže veľa všeobecných hlavičkových súborov je použitých v~takmer každej jednotke.
+
+Priamočiare riešenie by bolo spojiť celý projekt do jedného hlavičkového súboru. Tak by sa pre každú prekladovú jednotku čítal iba jeden súbor z~disku. Trochu sofistikovanejšie riešenie by bolo použiť moduly z~\Cpp{}20, ktoré riešia problém opakovaného spracúvania rovnakých súborov tak, že ich prekladač vopred preloží. Moduly by sa tiež navyše mohli použiť pri metadátach. Bohužiaľ, podpora modulov nie je zatiaľ dostatočná na hlbšiu analýzu toho, ako by ich použitie mohlo pre tento projekt vyzerať, a~čím by ho zlepšilo.
+
+Druhou možnou príčinou dlhotrvajúcej kompilácie môže byť veľké množstvo \emph{template instantiations} (TI). Template instantiation je činnosť prekladača, pri ktorej sa generuje špecializácia šablóny pre konkrétne šablónové argumenty. Kaž\-dá TI je práca pre prekladač, teda vyšší počet TI znamená dlhší kompilačný čas. TI pochádzajú hlavne z~knižnice \PP{}, ale tiež z~niektorých konštruktov nachádzajúcich sa v~\PPreflection{}. Väčšinou ide o~situáciu, kde je potrebné získať prvok parameter packu na určitom indexe. Na toto knižnica používa rekurzívne riešenia, ktoré pre $n$-tý index vytvoria $O(n)$ TI. Veľa TI vzniká tiež z~dôvodu rozsiahleho použitia \texttt{PP::type}, \texttt{PP::value} a~podobných metaprogramovacích pomôcok. Napríklad, pre jednu premennú typu \texttt{PP::tuple<T...>} so \texttt{sizeof...(T) == 16} a~jeden prístup k~15. prvku sa vytvorí približne 118 TI.
+
+Tento problém by bolo možné najjednoduchšie vyriešiť s~podporou prekladača, kde by prekladač poskytol nástroj na získanie prvku parameter packu v~konštantnom čase. Zatiaľ sa takýto nástroj nachádza iba v~\Clang{}. Problém takého riešenia je tiež nestabilita, keďže nejde o~štandardnú funkciu jazyka. Inak by bolo možné na niektorých miestach použiť sofistikovanejšie riešenia, ako je priama rekurzia. \texttt{PP::make\_value\_sequence} je napríklad implementovaný tak, že vytvára iba $O(\log{}n)$ TI pre zoznam indexov dlhý $n$.
+
+Ďalší problém spôsobujúci dlhú kompiláciu súvisí taktiež s~knižnicou \PP{}. Keďže v~štandardnej knižnici zatiaľ nie je \texttt{constexpr} všetko, čo by mohlo byť, \PP{} implementuje svoje verzie štandardných tried, ako napríklad \texttt{vector} alebo \texttt{optional}. Je veľmi pravdepodobné, že knižnica vytvára neefektívny kód nielen za behu, ale aj z~hľadiska kompilačného času, keďže na vývoj \PP{} bol vynaložený iba zlomok práce oproti implementáciám štandardnej knižnice.
+
+Dobré riešenie zatiaľ neexistuje, keďže štandard neponúka \texttt{constexpr} verzie dôležitých funkcií a~konštruktorov. Kým do štandardu nepríde ich podpora, ostáva iba vylepšovať knižnicu \PP, respektíve použiť inú, ekvivalentnú knižnicu.
+
+\subsection{Ignorácia neverejných členov}
+
+Program ignoruje neverejné členy a~neverejných predkov tried. Pri predkoch sa ignoruje fakt, že sú predkami, nie celá trieda predka. Tento nedostatok spôsobuje nekorektné chovanie pri dynamickom volaní funkcií cez introšpekciu, kde sa môže namiesto korektného zlyhania vybrať nie najlepšia konverzia.
+
+Prístup ku členom funguje v~\Cpp{} takým spôsobom, že všetky mechanizmy, ktoré ho potrebujú zvažovať, ho uvažujú vždy na konci. Vo všeobecnosti tieto mechanizmy fungujú tak, že sa najprv vytvorí množina kandidátov, z~nej sa vyberie najlepší, a~ak ten nie je prístupný, program je nesprávny (\emph{ill-formed}). Program sa môže stať ill-formed aj skôr počas daného mechanizmu, to ale neovplyvňuje tento aspekt projektu. Cieľom kontroly prístupnosti na úplnom konci je, aby sa zmenou prístupnosti nemenilo chovanie. Inak povedané, ak pre nejaký zdrojový kód uvažujeme množinu všetkých kódov, ktoré sa z~neho dajú vytvoriť iba zmenou prístupností, tak všetky korektné kódy v~tejto množine vytvoria po preklade chovaním identické programy.
+
+Pre účely dynamického volania funkcií sa chová \PPreflection{} ako prekladač. Predpokladajme, že je implementovaný správne až na ignoráciu neprístupných členov. Potom platí: pre zdrojový text, ktorý je podľa štandardu korektný, sa chová \PPreflection{} identicky ako správny prekladač. Dôkaz: Pri korektnom texte by správny prekladač vybral z~množiny kandidátov $C$ práve jedného, ktorý by bol lepší ako všetky zvyšné a~bol by verejný. \PPreflection{} vyberá z~$\{c \in C \mid c \text{ verejný}\}$. Keďže kandidát vybraný správnym prekladačom je verejný, zvažuje ho aj \PPreflection. Keďže predpokladáme, že inak je \PPreflection{} správny prekladač, zvolí ho tiež ako maximálny $\square$. Prípad, kedy by správna implementácia nepreložila program je samozrejme otvorený, a~kvôli ignorácii prístupnosti môže dôjsť k~nesprávnemu chovaniu. Dôležité je, že kvôli tomuto nedostatku sa chová introšpekcia inak ako štandard iba v~prípade, že vstup bol chybný.
+
+Dôvodom tejto odchýlky je zjednodušenie implementácie, čím sme získali cenný čas na implementáciu iných zaujímavejších častí projektu. K rozhodnutiu tiež prispel malý dopad na korektnosť a~tiež priamočiarosť nápravy rozhodnutia.
+
+Riešením by bolo prestať používať adresy funkcií ako tagy a~upraviť konverzie na referenciu na predka tak, aby kontrolovali prístup. To by najskôr vyžadovalo zavedenie dodatočných metadát o~prístupe.
+
+\subsection{Chýbajúca podpora premenných}
+
+V projekte chýba podpora pre premenné. Analogicky k~ostatným reflektovaným entitám by malo byť možné: enumerovať deskriptory dátových členov danej triedy, získať z~objektu a~deskriptoru premennej hodnotu ako dynamickú referenciu.
+
+Táto funkcionalita je relatívne nezávislá na iných schopnostiach knižnice, teda nebola implementovaná z~časových dôvodov. Premenné by boli dôležité napríklad pri serializácii alebo kompatibilite s~existujúcim kódom, ktorý premenné využíva priamo.
+
+Implementácia introšpekcie premenných by mala vyzerať analogicky ku introšpekcii členských funkcií.
+
+\subsection{Chýbajúca podpora šablón}
+
+Podpora pre šablóny nie je úplne implementovateľná z~obmedzení daných jazykom. Niektoré vlastnosti by ale aj tak mohli byť reflektovateľné, napríklad meno šablóny alebo informácie o~jej parametroch.
+
+Ak by sme boli ochotní akceptovať, že užívateľ by bol povinný vymenovať všetky kombinácie šablónových argumentov pre každú šablónovú entitu, ktorú by si prial reflektovať, dalo by sa uvažovať aj nad omnoho silnejšou podporou šablón.
+
+Kvôli chýbajúcej podpore pre šablóny nereflektujeme ani ich špecializácie. To má napríklad za následok, že ak funkcia používa ako parameter špecializáciu šablóny, nemôžeme ju reflektovať, pretože knižnica by nemala potrebné údaje o~type parametru.
+
+Knižnica nevidí v~metadátach rozdiel medzi informáciami o~obyčajnej triede a~informáciami o~špecializácii šablónovej triedy. Úlohou by bolo vyriešiť, ako donútiť generátor produkovať metadáta pre každú špecializáciu. 
+
+\subsection{Atribúty}
+
+Jedným, respektíve celou skupinou možných rozšírení, je pridať do projektu podporu pre atribúty. \PPreflector{} by ich spracoval a~zahrnul do metadát. V~knižnici by sa potom mohla rozšíriť funkcionalita deskriptorov na základe týchto metadát.
+
+Toto sú niektoré možné druhy atribútov:
+
+\subsubsection{\texttt{[[ignore]]}}
+
+Inštrukcia pre introšpekciu ignorovať danú entitu.
+
+\subsubsection{\texttt{[[priority(p)]]}}
+
+Nastaví konverznej funkcii prioritu, ktorá sa použije v~overload resolution pri nejednoznačných konverziách.
+
+\subsubsection{Užívateľsky definované atribúty}
+
+Bolo by možné detekovať aj ľubovoľný atribút. Potrebné by bolo vytvoriť nový typ deskriptoru, ktorý by niesol informácie o~atribúte. Každý deskriptor by potom vedel enumerovať atribúty svojej entity.
+
+\section{Ostatné}
+
+Táto časť slúži ako enumerácia zvyšných problémov, ktoré sa v~projekte nachádzajú. Ide buď o~problémy, ktoré majú minimálny dopad na funkciu, alebo o~problémy, ktoré sú jednoducho riešiteľné. Poradie ich uvedenia je arbitrárne.
+
+\subsubsection{Aliasy}
+
+Nepodporujeme introšpekciu aliasov. Jej doplnenie by malo byť triviálne, podobne ako pri premenných.
+
+\subsubsection{Nekompletné typy}
+
+Nepreskúmali sme fungovanie nekompletných typov, ktoré kvôli tomu ignorujeme. Pravdepodobne by bolo možné implementovať nekompletné typy ako ďalšiu kategóriu deskriptorov.
+
+\subsubsection{Move konštruovateľné parametre}
+
+Ak je parameter pri dynamickom volaní funkcií hodnotového typu, musí byť move konštruovateľný. Mohli by sme použiť podobný princíp ako v~knižnici \PP{}, kde namiesto priameho použitia argumentu používame bezparametrický funktor.
+
+\subsubsection{Slabá implementácia dynamickej premennej}
+
+Dynamická premenná je implementovaná veľmi primitívne, čo môže spôsobovať výkonnostné problémy. Riešením by mohlo byť spojenie dynamických referencií a~objektov do jednej triedy.
+
+\subsubsection{Ignorácia \texttt{std} a~\PPreflection{}}
+
+Nereflektujeme štandardnú knižnicu ani knižnicu \PPreflection{}. To má za následok, že nie je možné reflektovať ani funkcie, ktoré používajú triedy týchto knižníc ako parametre. Tiež to spôsobuje, že je nutné vložiť makro preprocesora do reflektovaného kódu. Toto rozhodnutie je preventívne, nie je principiálny dôvod, prečo tieto knižnice nereflektovať.
+
+\subsubsection{Zlá optimalizácia dynamického objektu}
+
+Dynamický objekt je schopný kvôli optimalizácii ukladať svoj objekt v~statickej pamäti. Pri move konštruovaní dynamického objektu vzniká problém, že takýto proces nie je dovolený pre všetky objekty jazyka. Naše pravidlá pre voľbu tejto optimalizácie sú príliš slabé; je nutné zabezpečiť aby bol objekt v~statickej pamäti \emph{trivially copyable}.
+
+\subsubsection{Default parametre}
+
+Nepodporujeme default parametre, teda vždy vyžadujeme aby sa počet argumentov zhodoval s~počtom parametrov. Implementácia tohoto mechanizmu by mala byť triviálna, stačí upraviť príslušné miesta v~overload resolution a~na mieste s~volaním funkcie vytvoriť v~kompilačnom čase tabuľku pre všetky možné počty argumentov.
+
+\subsubsection{Variadické funkcie}
+
+Nepodporujeme variadické funkcie. Tento mechanizmus je v~\Cpp{} málo používaný. Neskúmali sme ani, ako by ich podpora vyzerala.
+
+\subsubsection{Vylepšenie \texttt{viable\_functions}}
+
+Optimalizácia pomocou \texttt{viable\_functions} v~aktuálnom stave funguje tak, že typy argumentov sa musia presne zhodovať s~vopred uvedenými. To by sa dalo vylepšiť, aby bola povolená malá odchýlka. Tiež by bolo možné zaviesť usporiadanie medzi postupnosťami typov argumentov, aby bolo možné v~zozname vyhľadávať v~logaritmickom čase. Nie je zrejmé, či pri veľkostiach zoznamov, aké sú pri tomto procese bežné, by binárne vyhľadávanie prinieslo nejaký úžitok.
+
+\subsubsection{Výnimky}
+
+Na niektorých miestach ignorujeme možnosť výnimiek. Doplnenie zvládania výnimiek by nemalo vyžadovať nijaký zásah do návrhu, išlo by čisto o~rozšírenie schopností.

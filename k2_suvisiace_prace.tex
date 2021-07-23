@@ -1,0 +1,116 @@
+\chapter{Súvisiace práce} \label{suvisiace}
+
+V tejto kapitole preskúmame existujúce implementácie introšpekcie v~\Cpp{}. Cieľ je tiež ukázať \uv{medzeru} v~ich schopnostiach, ktorú \PPreflection{} zapĺňa. Časťou analýzy každej knižnice bude príklad jej použitia. Pri každom príklade predpokladáme existenciu nasledovnej triedy:
+
+\begin{code}
+struct Struct {
+    int field;
+    S() : field(7) {};
+    void method(double) {};
+};
+\end{code}
+
+\section{\textsf{RTTR}}
+
+Knižnica \textsf{RTTR} ponúka introšpekciu s~manuálnou registráciou. Pri tejto manuálnej registrácii musí užívateľ explicitne vymenovať všetky entity, ktoré chce do introšpekcie registrovať. Dokáže napríklad enumerovať členov, vytvárať dynamické objekty, dynamicky volať funkcie a~pristupovať ku dátovým členom skrz reflektované entity.
+
+Dynamické volania vracajú typ \texttt{variant}, ktorý môže obsahovať objekt ľubovoľného typu. Nie sú pri nich povolené žiadne konverzie --- typy parametrov a~argumentov sa musia zhodovať. Tiež pri nich nie je možné použiť \texttt{variant} ako argument.
+
+Autor: Axel Menzel, \url{https://github.com/rttrorg/rttr}.
+
+\subsection*{Príklad}
+
+\begin{code}
+#include <rttr/registration>
+
+RTTR_REGISTRATION
+{   rttr::registration::class_<Struct>("Struct")
+         .property("field", &Struct::field)
+         .constructor<>()
+         .method("f", &Struct::method);
+}
+// ...
+Struct s;
+auto t = type::get<Struct>();
+auto field = t.get_property("field");
+std::cout << field.get_value(s).get_value<int>(); // vypíše 7
+\end{code}
+
+\section{\textsf{meta}}
+
+Táto knižnica nepoužíva makrá. Namiesto toho vytvára objekty \texttt{factory}, do ktorých sa manuálne registrujú informácie o~entite. Má podobné schopnosti ako \textsf{RTTR}. Dynamické volania vracajú typ \texttt{any}, ktorý --- na rozdiel od \textsf{RTTR} --- je možné použiť ako argument. Takisto ako predošlá knižnica nepodporuje konverzie, typy sa pri volaní musia zhodovať.
+
+Autor: Michele Caini, \url{https://github.com/skypjack/meta}.
+
+\subsection*{Príklad}
+
+\begin{code}
+#include <meta/factory.hpp>
+#include <meta/meta.hpp>
+
+std::hash<std::string_view> hash{};
+
+meta::reflect<Struct>(hash("Struct"))
+    .data<&Struct::field>(hash("field"));
+    .ctor<>()
+    .func<&Struct::method>(hash("method"));
+    
+Struct s;
+auto t = meta::resolve<Struct>();
+auto field = t.data(hash("field"));
+std::cout << field.get(s).cast<int>(); // vypíše 7
+\end{code}
+
+\section{\textsf{SelfPortrait}}
+
+Táto knižnica ponúka generátor metadát, takže nie je potrebná explicitná registrácia entít. Inak je schopnosťami porovnateľná s~\textsf{meta}. Tiež neimplementuje konverzie pri dynamickom volaní.
+
+Autori: \citet{bayser2012system}, \url{https://github.com/maxdebayser/SelfPortrait}.
+
+\subsection*{Príklad}
+
+\begin{code}
+VariantValue s = Struct();
+auto t = Class::lookup("Struct");
+auto field = t.getAttribute("field");
+std::cout << field.get(s).value<int&>(); // vypíše 7
+\end{code}
+
+\section{Ostatné}
+
+\begin{itemize}
+    \item \textsf{Ponder} - používa makrá, nutná explicitná registrácia
+    
+    \url{https://github.com/billyquith/ponder}
+    
+    \item \textsf{Refureku} - nutné použitie makier na registráciu na mieste deklarácie entít
+    
+    \url{https://github.com/jsoysouvanh/Refureku}
+    
+    \item \textsf{CPP-Reflection} - zdanlivo populárna knižnica, no zdá sa byť nedokončená
+    
+    \url{https://github.com/AustinBrunkhorst/CPP-Reflection}
+    
+\end{itemize}
+
+\section{Zhrnutie}
+
+Použitie makier je medzi knižnicami pre introšpekciu populárny spôsob ako generovať metadáta. Žiaľ, v~istom zmysle popiera princíp introšpekcie ako schopnosti jazyka. Ak musí užívateľ explicitne registrovať entity jazyka do knižnice, nejde potom o~schopnosť \emph{jazyka} reflektovať na svoju štruktúru. Užitočnosť týchto knižníc to samozrejme nepopiera --- nutnosť registrovať entity sa môže aj tak vyplatiť --- no poukazuje to na silný nedostatok. Tiež sme neboli schopní nájsť ani jednu knižnicu, ktorá by sa aspoň snažila mechanizmus volania reflektovaných funkcií priblížiť tomu zo štandardného \Cpp{}, teda implementovala by implicitné konverzie.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{l@{\hspace{0.4cm}}ccc}
+\toprule
+\textbf{Názov projektu} & \mc{\textbf{Bez makier}} & \mc{\textbf{Automatická registrácia}} & \mc{\textbf{Konverzie}} \\
+\midrule
+Ponder          & \textbf{-} & \textbf{-} & \textbf{-} \\
+Refureku        & \textbf{-} & \textbf{-} & \textbf{-} \\
+RTTR            & \textbf{-} & \textbf{-} & \textbf{-} \\
+meta            & \checkmark & \textbf{-} & \textbf{-} \\
+SelfPortrait    & \checkmark & \checkmark & \textbf{-} \\
+\PPreflection{} & \checkmark & \checkmark & \checkmark \\
+\bottomrule
+\end{tabular}
+\caption{Porovnanie knižníc na introšpekciu v~\Cpp{}}
+\label{tab1}
+\end{table}

@@ -1,0 +1,49 @@
+\chapter{Výsledky} \label{vysledky}
+
+\section{Popis merania}
+
+Keďže dynamické volanie funkcií cez introšpekciu je porovnateľné s~mechanizmom \texttt{dynamic} zo \Csharp{}, rozhodli sme sa porovnať ich rýchlosť. Oba spôsoby sme navyše porovnali s~virtuálnymi volaniami v~príslušnom jazyku.
+
+Vytvorili sme teda štyri implementácie s~ekvivalentným chovaním. Ide o~visitor návrhový vzor. Existuje jedna trieda predka, päť jej potomkov, rozhranie visitoru a~jedna jeho implementácia. Na začiatku programu vytvoríme objekty potomkov. Pri každom sa náhodne vyberie, aký z~piatich typov objekt bude mať. Tieto objekty vložíme do zoznamu odkazov na predka. V~\Cpp{} použijeme \texttt{unique\_ptr}, v~\Csharp{} stačí obyčajná referencia. Potom prejdeme v~cykle všetky objekty, postupne ich navštevujeme virtuálnymi volaniami a~meriame čas. Potom prejdeme zoznam znovu, tentokrát s~dynamickým navštevovaním, a~meriame čas.
+
+Implementácie v~\Cpp{} a~\Csharp{} sa nachádzajú v~prílohe pod názvami \texttt{Demo3} a~\texttt{Demo4}, respektíve.
+
+Pri implementácii s~\PPreflection{} sme vytvorili dva varianty; jeden s~optimalizáciou pomocou dopredného vymenovania všetkých možných zoznamov typov argumentov, druhý bez. Pri neoptimalizovanej verzii mal zoznam objektov 100\,000 prvkov, pri všetkých zvyšných implementáciách sme prechádzali 10\,000\,000 prvkov.
+
+Každú implementáciu sme spustili 15-krát, pričom sme zahodili prvé tri merania a~potom najrýchlejšie a~najpomalšie zo zvyšných 12. Ostalo teda desať meraní, z~ktorých sme vytvorili aritmetický priemer času na 10\,000\,000 volaní.
+
+Programy boli spustené na počítači s~nasledovnými charakteristikami:
+%$
+\begin{table}[H]
+\begin{tabular}{rl}
+Operačný systém & Windows 11 Pro 64-bit, WSL2 Ubuntu 21.10 \\
+Procesor & Intel Core i7 6700K @ 4\,GHz \\
+RAM & 16\,GB @ 1333\,MHz \\
+\end{tabular}
+\end{table}
+
+\section{Interpretácia výsledkov}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{l@{\hspace{1.2cm}}D{.}{,}{6.1}D{.}{,}{3.1}}
+\toprule
+\textbf{Metóda} & \mc{\textbf{Priemerný čas (ms)}} & \mc{\textbf{Nárast}} \\
+\midrule
+\Cpp{} \texttt{virtual}            &     82.6 & \mc{---} \\
+\Csharp{} \texttt{virtual}         &    209.2 &     2.5 \\
+\Csharp{} \texttt{dynamic}         &    813.3 &     3.9 \\
+\PPreflection{} (s optimalizáciou) &   4691.5 &     5.8 \\
+\PPreflection{}                    & 499400.0 &   106.4 \\
+\bottomrule
+\end{tabular}
+\caption{Porovnanie rýchlosti \PPreflection{}}\label{tab2}
+\end{table}
+
+Ako prvé si môžeme všimnúť, že bez optimalizácie má \PPreflection{} takmer nepoužiteľne zlý výkon. To napovedá, že buď sme overload resolution implementovali veľmi slabo, alebo neexistuje implementácia, ktorá by spúšťala OR pri každom volaní a~stále mala rozumný výkon.
+
+Po optimalizácii sú výsledky približne 106-krát lepšie, no keď sa pozrieme na ekvivalentnú implementáciu v~rovnakom jazyku, stále vidíme viac ako 50-násobné spomalenie. Nie je to fér porovnanie, pretože naša implementácia má v~skutočnosti viac schopností ako obyčajné virtuálne volanie, takže isté spomalenie sa očakáva.
+
+Primerané by bolo porovnať ju s~\texttt{dynamic} v~jazyku \Csharp{}. Tam vidíme iba nárast o~faktor 5,8. Je teda možné, že ak by sme sa pokúsili opraviť ešte niekoľko nedostatkov v~implementácii knižnice, boli by sme schopní dosiahnuť podobné výsledky ako má \Csharp{} \texttt{dynamic}.
+
+Druhé rozumné porovnanie je medzi nárastami rýchlosti vrámci jedného jazyka. V~\Csharp{} je \texttt{dynamic} 3,9-krát pomalší ako virtuálne volanie. \PPreflection{} je 56,8-krát pomalšie. Teda, ak by sa naša knižnica zrýchlila 14,5-krát, dostali by sme rovnakú cenu za dynamické volanie v~\Cpp{} ako v~\Csharp{}.

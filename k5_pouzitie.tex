@@ -1,0 +1,477 @@
+\chapter{Použitie} \label{pouzitie}
+
+Táto kapitola sa zaoberá vysvetlením použitia celého systému vytvoreného v~tejto práci. Vytvorený projekt a~príklady použitia sa nachádzajú v~prílohe, ktorej štruktúra je nasledovná:
+
+\begin{figure}[H]
+\dirtree{%
+.1 /.
+.2 Demo1/.
+.2 Demo2/.
+.2 Demo3/.
+.2 Demo4/.
+.2 PPreflection/.
+.3 install/$^*$.
+.4 PPreflection/.
+.5 include/.
+.5 generate\_metadata.sh.
+.5 libPPreflection.a.
+.5 PPreflector.so.
+.3 configure.sh.
+.3 build.sh.
+.3 install.sh.
+.3 clean.sh.
+}
+\caption{Štruktúra prílohy}
+\end{figure}
+
+\section{Preklad \PPreflection{} a~\PPreflector{}}
+
+\subsection{Požiadavky}
+
+Kvôli použitiu najnovšieho štandardu, \CppV{}, ktorý nie je v~prekladačoch naplno implementovaný, je zatiaľ možné preložiť projekt iba pomocou prekladača \GCCV{} s~argumentom \texttt{-std=c++20}. Keďže \PPreflector{} je plugin do \Clang{}, na jeho preklad musia byť nainštalované \textsf{LLVM 12} a~\ClangV{} vývojové balíčky. Na preklad používame \textsf{CMake} spolu s~\textsf{Ninja} build systémom. Skripty sú písane pre shell \textsf{Bash}.
+
+\subsection{Postup}
+
+V adresári projektu \path{/PPreflection/} sú pripravené skripty \path{configure.sh}, \path{build.sh} a~\path{install.sh} určené na automatický preklad. Najprv treba spustiť \path{configure.sh}. Ten pripraví potrebné súbory pre preklad. Potom spustenie \path{build.sh} preloží \PPreflection{} aj \PPreflector{}. Spustenie \path{install.sh} pripraví inštalačný adresár \path{install/}. Ten bude potrebný pri demonštračných projektoch.
+
+\subsubsection{Pravdepodobná chyba v~\Clang{}}
+
+\Clang{} pravdepodobne obsahuje chybu vo verzii 12, kde je v~jednom hlavičkovom súbore na dvoch miestach pri deklarácii konštruktoru šablónovej triedy použitý názov triedy vrátane šablónových argumentov. To \GCCV{} hlási pri preklade \PPreflector{} ako chybu. Riešenie je upraviť hlavičkový súbor a~odstrániť šablónové argumenty z~deklarácií.
+
+\section{Preklad projektu s~introšpekciou}
+
+\subsection{Požiadavky}
+
+Pre použitie knižnice \PPreflection{} je nutný štandard \CppV{}. Kvôli použitiu najnovšieho štandardu je preklad projektov používajúcich introšpekciu zatiaľ možný iba s~\GCCV{}. Generácia metadát je vykonávaná spustením prekladača \ClangV{}.
+
+\subsection{Príklad}
+
+Predpokladajme projekt, kde máme deklarované namespace s~vnorenými triedami a~chceme vytvoriť funkciu, ktorá pre meno namespace vypíše jeho vnorené triedy.
+%$
+\begin{code}[fontsize=\footnotesize]
+// print_namespace_types.hpp
+namespace N { struct A {}; struct B {}; struct C {}; }
+namespace M { struct D {}; struct E {}; }
+
+#ifndef PPREFLECTOR_GUARD
+void print_namespace_types(std::string_view name, std::ostream& out);
+#endif
+
+// print_namespace_types.cpp
+#include "print_namespace_types.hpp"
+
+#include "print_namespace_types.cpp.meta"
+
+#ifndef PPREFLECTOR_GUARD
+void print_namespace_types(std::string_view name, std::ostream& out)
+{ /* introspection */ }
+#endif
+
+// main.cpp
+#include "print_namespace_types.hpp"
+
+int main()
+{   print_namespace_types("N", std::cout);
+    print_namespace_types("M", std::cout);
+    return 0;
+}
+\end{code}
+%$
+Detaily implementácie funkcie \texttt{print\_namespace\_types} nie sú pre preklad dôležité.
+
+Do súboru, ktorý používa introšpekciu, je potrebné vložiť pomocou \texttt{\#include} súbor s~metadátami, ktorého názov je celý názov súboru plus prípona \texttt{.meta}. \texttt{PPREFLECTOR\_GUARD} slúži na skrytie častí kódu, ktoré používajú namespace \texttt{std} alebo \PPreflection{}. Tieto dva namespace generátor metadát nerozpoznáva a~nemôže na vstupe dostať kód, ktorý ich používa.
+
+Na preklad potrebujeme adresár \texttt{install/PPreflection/}, ktorý sa vytvára pri preklade knižnice. Obsahuje hlavičkové súbory, skript na generáciu metadát, statickú knižnicu \PPreflection{} a~plugin \PPreflector{}.  Potrebujeme ho skopírovať do adresára nášho projektu.
+
+Ďalej potrebujeme vytvoriť súbory s~metadátami. Súbor \texttt{main.cpp} introšpekciu nepoužíva, takže stačí vytvoriť metadáta pre \path{print_namespace_types.cpp}. To urobíme pomocou skriptu \path{generate_metadata.sh}. Ten akceptuje ako prvý parameter cestu k~\PPreflector{} pluginu, v~tomto prípade \path{PPreflection/PPreflector.so}, a~ako druhý parameter cestu k~súboru, z~ktorého treba vytvoriť metadáta.
+
+Keď máme vytvorené metadáta, môžeme začať preklad. Projekt potrebuje linkovať ako statickú knižnicu \PPreflection{}. Tiež potrebujeme nastaviť adresár pre objavenie hlavičkových súborov \path{include/}. Príklad v~\textsf{CMake}:
+\begin{code}[fontsize=\footnotesize]
+add_executable(ExecutableName "main.cpp" "print_namespace_types.cpp")
+target_compile_features(ExecutableName PUBLIC cxx_std_20)
+target_include_directories(ExecutableName PUBLIC
+    "\${CMAKE_CURRENT_LIST_DIR}/PPreflection/include")
+target_link_libraries(ExecutableName
+    "\${CMAKE_CURRENT_LIST_DIR}/PPreflection/libPPreflection.a")
+\end{code}
+
+Tento príklad sa nachádza v~prílohe pod názvom \texttt{Demo1}.
+
+\subsection{Demonštračné projekty}
+
+V prílohe sú priložené tri demonštračné projekty využívajúce introšpekciu a~jeden projekt pre \textsf{.NET}.
+
+\begin{itemize}[itemsep=0pt]
+    \item \texttt{Demo1} ukazuje postup pri preklade s~introšpekciou.
+    \item \texttt{Demo2} demonštruje schopnosti introšpekcie.
+    \item \texttt{Demo3} meria výkon \Cpp{} a~\PPreflection{}.
+    \item \texttt{Demo4} meria výkon \Csharp{}.
+\end{itemize}
+
+\texttt{Demo4} obsahuje skripty \path{build.sh} a~\path{clean.sh} určené na preklad a~vymazanie vytvorených súborov, respektíve. Spustiteľný súbor má meno \path{Demo4} a~vytvorí sa v~priečinku projektu spustením \path{build.sh}. Na preklad je potrebný \textsf{.NET 5.0}.
+
+Pred prekladom prvých troch projektov je nutné skopírovať vygenerovaný adresár \path{/PPreflection/install/PPreflection/} do adresáru projektu.
+
+Každý z~troch projektov používajúcich \PPreflection{} má vytvorené štyri skripty na ich automatický preklad. Súčasťou skriptu \path{build.sh} je vždy aj generácia metadát, takže na preklad stačí spustiť skripty v~tomto poradí: \path{configure.sh}, \path{build.sh}, \path{install.sh}. Potom sa v~priečinku projektu objaví spustiteľný súbor s~názvom zhodným s~názvom projektu. Na vymazanie súborov vytvorených pri preklade sa používa skript \path{clean.sh}.
+
+\section{Dokumentácia}
+
+V tejto časti sa nachádza podrobnejšia dokumentácia vybraných dôležitých tried z~\PPreflection{}.
+
+Kompletnú dokumentáciu celého projektu je možné získať spustením príkazu \texttt{doxygen doxy\_config} v~priečinku \path{/PPreflection/}. Hlavná stránka \textsf{HTML} dokumentácie sa nachádza v~\path{/PPreflection/doc/html/index.html}.
+
+\subsection{\texttt{dynamic\_reference}}
+
+Dynamická referencia reprezentuje odkaz na ľubovoľný objekt alebo funkciu.
+
+\subsubsection{Rozhranie}
+
+\begin{code}[fontsize=\footnotesize]
+dynamic_reference(const dynamic_reference&);
+dynamic_reference(auto&&);
+dynamic_reference& operator=(const dynamic_reference&);
+auto get_type() const;
+auto cast_unsafe(PP::concepts::type auto t) const -> PP_GET_TYPE(t)&&;
+decltype(auto) visit(PP::concepts::type auto, auto&&) const;
+decltype(auto) visit_ptr(PP::concepts::type auto, auto&&) const;
+\end{code}
+
+\subsubsection{\texttt{dynamic\_reference(const dynamic\_reference\& r)}}
+
+Triviálny kopírovací konštruktor, vytvorí referenciu odkazujúcu tam ako \texttt{r}.
+
+\subsubsection{\texttt{dynamic\_reference(auto\&\& r)}}
+
+Vytvorí dynamickú referenciu na \texttt{r}. Je implicitný, takže nie je nutná explicitná konverzia napríklad pri volaní funkcie, ktorá akceptuje \texttt{dynamic\_reference}. To využívame pri všetkých funkciách \texttt{invoke}, ktoré akceptujú pohľad na dynamické referencie. Vďaka pravidlám jazyka je do týchto funkcií možné vložiť ľubovoľný argument iného typu, ktorý sa automaticky konvertuje na dynamickú referenciu pomocou tohoto konštruktoru.
+
+Je obmedzený tak, že typ \texttt{r} nemôže byť dynamická referencia, objekt ani premenná.
+
+\subsubsection{\texttt{operator=(const dynamic\_reference\&)}}
+
+Triviálne kopírovacie priradenie. Zmení, na čo referencia ukazuje. Referencie v~\Cpp{} takúto schopnosť nemajú, v~tomto zmysle ide o~hybrid medzi referenciou a~ukazovateľom.
+
+\subsubsection{\texttt{get\_type()}}
+
+Vráti deskriptor implementujúci \texttt{reference\_type}, ktorý označuje typ danej dynamickej referencie.
+%$
+\begin{code}
+int i;
+dynamic_reference r = i;
+std::cout << r.get_type(); // "int&"
+\end{code}
+
+\subsubsection{\texttt{cast\_unsafe(PP::concepts::type auto t)}}
+
+Vráti silno typovanú referenciu na objekt odkazovaný dynamickou referenciou. Ak \texttt{t} reprezentuje referenčný typ, vrátená referencia je toho typu. Ak \texttt{t} reprezentuje hodnotový typ \texttt{T}, vrátená referencia je typu \texttt{T\&\&}.
+Interne využíva \texttt{reinterpret\_cast}, takže konverzia je korektná, iba ak vedie na rovnaký typ, akého je interne daná dynamická referencia.
+%$
+\begin{code}
+int i = 4;
+dynamic_reference r = i;
+std::cout << i.cast_unsafe(PP::type<int&>); // "4"
+\end{code}
+
+\subsubsection{\texttt{visit(PP::concepts::type auto t, auto\&\& f)}}
+
+Spustí unárny funktor \texttt{f} s~argumentom typu reprezentovaného \texttt{t} s~pridanými cv a~ref kvalifikátormi na základe dynamickej referencie.
+%$
+\begin{code}
+struct f { void operator()(auto&)  { std::cout << "L"; }
+           void operator()(auto&&) { std::cout << "R"; } };
+
+int i;
+dynamic_reference r = i;
+r.visit(PP::type<int>, f{}); // "L"
+r = std::move(i);
+r.visit(PP::type<int>, f{}); // "R"
+\end{code}
+
+\subsubsection{\texttt{visit\_ptr(PP::concepts::type auto t, auto\&\& f)}}
+
+Podobné ako \texttt{visit}. Predpokladá, že dynamická referencia ukazuje na \texttt{cv T*}, pričom \texttt{t} reprezentuje \texttt{T}. cv sa určí z~dynamickej referencie. Spustí \texttt{f} s~argumentom \texttt{cv T*\&\&}.
+%$
+\begin{code}
+struct f { void operator()(      auto*) { std::cout << "N"; }
+           void operator()(const auto*) { std::cout << "C"; } };
+
+int i;
+int* p = &i;
+dynamic_reference r = p;
+r.visit(PP::type<int>, f{}); // "N"
+int* p = &std::as_const(i);
+r = p;
+r.visit(PP::type<int>, f{}); // "C"
+\end{code}
+
+\subsection{\texttt{dynamic\_object}}
+
+Dynamický objekt reprezentuje objekt ľubovoľného typu.
+
+Môže sa nachádzať v~troch stavoch: \textit{neplatný}, \texttt{void} a~\textit{platný}. V~stave \textit{neplatný} navyše poskytuje informáciu o~druhu chyby, ktorá nastala. Iba v~stave \textit{platný} obsahuje nejaký objekt.
+
+\subsubsection{Rozhranie}
+\begin{code}[fontsize=\footnotesize]
+dynamic_object();
+dynamic_object(dynamic_object&&);
+explicit dynamic_object(PP::concepts::invocable auto&&);
+dynamic_object& operator=(dynamic_object&&);
+cv_type<complete_object_type> get_cv_type() const;
+const complete_object_type& get_type() const;
+operator dynamic_reference() const;
+explicit operator bool() const;
+invalid_code get_error_code() const;
+bool is_void() const;
+
+static dynamic_object create_void();
+static dynamic_object create_invalid(invalid_code);
+static dynamic_object create(PP::concepts::type auto, auto&&...);
+\end{code}
+
+\subsubsection{\texttt{dynamic\_object(dynamic\_object\&\& o)}}
+
+Dynamický objekt je výhradným vlastníkom svojej pamäte, takže sa dá iba move konštruovať. Tento konštruktor uvedie objekt \texttt{o} do nedefinovaného stavu, takže sa nedá ďalej použiť.
+
+\subsubsection{\texttt{dynamic\_object(PP::concepts::invocable auto\&\& i)}}
+
+Pre \texttt{X:=PP\_F(i())} tento konštruktor vytvorí dynamický objekt inicializovaný s~\texttt{decltype(X)(X)}.
+
+\subsubsection{\texttt{operator=(dynamic\_object\&\&)}}
+
+Rovnaká sémantika ako má move konštruktor.
+
+\subsubsection{\texttt{operator dynamic\_reference()}}
+
+Vytvorí dynamickú referenciu na dynamický objekt.
+
+\subsubsection{\texttt{operator bool()}}
+
+Vráti \texttt{false} práve vtedy, keď je v~neplatnom stave.
+
+\subsubsection{\texttt{get\_error\_code()}}
+
+Ak je v~neplatnom stave, vráti kód o~stave. Inak vráti \texttt{invalid\_code::none}.
+
+\subsubsection{\texttt{is\_void()}}
+
+Vráti \texttt{true} práve vtedy, keď je v~stave \texttt{void}.
+
+\subsubsection{\texttt{create\_void()}}
+
+Vytvorí dynamický objekt v~stave \texttt{void}.
+
+\subsubsection{\texttt{create\_invalid(invalid\_code code)}}
+
+Vytvorí dynamický objekt v~neplatnom stave s~kódom \texttt{code}.
+
+\subsubsection{\texttt{create(PP::concepts::type auto t, auto\&\&... args)}}
+
+Vytvorí dynamický objekt ako \texttt{PP\_GT(t)(PP\_F(args)...)}.
+
+\subsection{\texttt{dynamic\_variable}}
+
+Reprezentuje dynamickú premennú, sum typ dynamickej referencie a~dynamického objektu.
+
+\subsubsection{Rozhranie}
+
+\begin{code}[fontsize=\footnotesize]
+explicit dynamic_variable(dynamic_reference);
+explicit dynamic_variable(dynamic_object&&);
+dynamic_variable(dynamic_variable&&);
+dynamic_variable& operator=(dynamic_variable&&);
+explicit operator bool() const;
+dynamic_object::invalid_code get_error_code() const;
+cv_type<type> get_type() const;
+operator dynamic_reference() const;
+
+static dynamic_variable create_void();
+static dynamic_variable create_invalid(dynamic_object::invalid_code);
+static dynamic_variable create(auto&&);
+\end{code}
+
+\subsubsection{\texttt{dynamic\_variable(dynamic\_reference)}}
+
+Vytvorí dynamickú premennú reprezentujúcu referenciu.
+
+\subsubsection{\texttt{dynamic\_variable(dynamic\_object\&\&)}}
+
+Vytvorí dynamickú premennú reprezentujúcu objekt.
+
+\subsubsection{\texttt{dynamic\_variable(dynamic\_variable\&\& v)}}
+
+Vykradne \texttt{v}. Ak \texttt{v} obsahovalo dynamickú referenciu, ostane nezmenené. Ak obsahovalo dynamický objekt, daný objekt sa presunie.
+
+\subsubsection{\texttt{operator=(dynamic\_variable\&\&)}}
+
+Rovnaká sémantika ako pri move konštruktore.
+
+\subsubsection{\texttt{operator bool()}}
+
+Ak obsahuje dynamickú referenciu, vráti \texttt{true}. Ak obsahuje dynamický objekt, vráti \texttt{operator bool} dynamického objektu.
+
+\subsubsection{\texttt{get\_error\_code()}}
+
+Ak obsahuje dynamickú referenciu, vráti \texttt{invalid\_code::none}. Ak obsahuje dynamický objekt, vráti chybový kód dynamického objektu.
+
+\subsubsection{\texttt{get\_type()}}
+
+Vráti dvojicu cv a~typ. Ak obsahuje dynamickú referenciu na \texttt{T\&\&}, vráti \texttt{(cv::none, T\&\&)}. Ak obsahuje dynamický objekt typu \texttt{cv T}, vráti \texttt{(cv, T)}.
+
+\subsubsection{\texttt{operator dynamic\_reference()}}
+
+Vráti kópiu dynamickej referencie, ak obsahuje referenciu. Ak obsahuje objekt, vráti dynamickú referenciu naň. Táto funkcia poskytuje prístup ku objektu, ktorý reprezentuje dynamická premenná.
+
+\subsubsection{\texttt{create\_void()}}
+
+Vytvorí dynamickú premennú obsahujúcu dynamický objekt vo \texttt{void} stave.
+
+\subsubsection{\texttt{create\_invalid(dynamic\_object::invalid\_code code)}}
+
+Vytvorí dynamickú premennú obsahujúcu dynamický objekt v~neplatnom stave s~kódom \texttt{code}.
+
+\subsubsection{\texttt{create(auto\&\& f)}}
+
+\texttt{f} musí byť funktor zavolateľný bez argumentov.
+
+Ak \texttt{f} vracia referenčný typ, vytvorí sa dynamická premenná obsahujúca dynamickú referenciu na návratovú hodnotu volania funktoru.
+
+Ak vracia hodnotový typ, vytvorí sa dynamická premenná obsahujúca dynamický objekt s~hodnotou volania funktoru.
+
+Ak vracia \texttt{void}, vytvorí sa dynamická premenná obsahujúca dynamický objekt v~stave \texttt{void}.
+
+\subsection{\texttt{candidate\_functions}}
+
+Kandidáti reprezentujú množinu funkcií, ktorá sa dá zavolať. Volanie funkcie je v~\Cpp{} definované v~skutočnosti na množine, takže táto trieda dáva to správne rozhranie pre implementáciu korektného chovania podľa štandardu.
+
+Trieda navyše spĺňa koncept pohľadu (na \texttt{const function\&}).
+
+\subsubsection{Rozhranie}
+
+\begin{code}[fontsize=\footnotesize]
+using IL = std::initializer_list<dynamic_reference>;
+
+explicit candidate_functions(PP::concepts::view auto&&);
+candidate_functions& trim_by_name(PP::string_view);
+candidate_functions& trim_by_exact_argument_count(PP::size_t);
+dynamic_variable invoke(const IL&) const;
+dynamic_variable invoke(PP::concepts::view auto&&) const;
+\end{code}
+
+\subsubsection{\texttt{candidate\_functions(PP::concepts::view auto\&\&)}}
+
+Inicializuje kandidátov z~pohľadu na deskriptory funkcií.
+
+\subsubsection{\texttt{trim\_by\_name(PP::string\_view name)}}
+
+Oreže z~množiny všetky funkcie, ktoré sa nevolajú \texttt{name}.
+
+\subsubsection{\texttt{trim\_by\_exact\_argument\_count(PP::size\_t count)}}
+
+Oreže z~množiny všetky funkcie, ktoré majú iný počet parametrov ako \texttt{count}.
+
+\subsubsection{\texttt{invoke(PP::concepts::view auto\&\&)}}
+
+Ako argument akceptuje pohľad na dynamické referencie na argumenty volania. Interne spustí overload resolution. Ak OR zlyhá, vráti dynamickú premennú obsahujúcu dynamický objekt v~neplatnom stave s~príslušným kódom o~chybe. Ak nezlyhá, vráti výsledok volania vybranej funkcie.
+
+\subsubsection{\texttt{invoke(const IL\&)}}
+
+Zavolá predošlý \texttt{invoke}. Poskytuje možnosť použiť inicializáciu so zloženými zátvorkami.
+
+\subsection{\texttt{viable\_functions}}
+
+Realizovateľné funkcie. Reprezentujú množinu funkcií s~už spustením overload resolution a~pripravenými konverznými sekvenciami. Rozhraním sú podobné ako kandidáti, ide predovšetkým o~optimalizáciu.
+
+\subsubsection{Rozhranie}
+
+\begin{code}[fontsize=\footnotesize]
+using IL = std::initializer_list<dynamic_reference>;
+template <typename T> concept v~= PP::concepts::view<T>;
+template <typename T> concept T = PP::concepts::tuple<T>;
+
+viable_functions(V auto&&, v~auto&&);
+viable_functions(V auto&&, T auto&&...);
+dynamic_variable invoke(V auto&& arguments) const;
+dynamic_variable invoke(const IL& arguments) const;
+\end{code}
+
+\subsubsection{\texttt{viable\_functions(V auto\&\& functions, v~auto\&\& argument\_lists)}}
+
+Akceptuje pohľad na deskriptory funkcií a~pohľad na pohľady na deskriptory referenčných typov. Druhý parameter reprezentuje množinu všetkých možných postupností typov argumentov, ktoré chce užívateľ pri volaní používať.
+
+Inicializuje množinu s~\texttt{functions} a~spustí overload resolution pre každý z~pohľadov na referenčné typy.
+
+\subsubsection{\texttt{viable\_functions(V auto\&\& functions, T auto\&\&... argument\_tuples)}}
+
+Poskytuje príjemnejšie rozhranie ako predošlý konštruktor. Ako druhý argument akceptuje n-ticu n-tíc referenčných typov.
+
+\subsubsection{\texttt{dynamic\_variable invoke(V auto\&\& arguments) const}}
+
+Zavolá funkciu s~\texttt{arguments}. Funkcia sa nevyberie pomocou OR, ale iba pomocou porovnania s~postupnosťami typov argumentov, ktoré boli pri konštrukcii poskytnuté.
+
+\subsubsection{\texttt{dynamic\_variable invoke(const IL\& arguments) const}}
+
+Zavolá predošlý \texttt{invoke}. Poskytuje možnosť použiť inicializáciu so zloženými zátvorkami.
+
+\section{Demonštrácia}
+
+V tejto časti vytvoríme program demonštrujúci schopnosti knižnice. V~prílohe sa tento projekt nachádza pod názvom \texttt{Demo2}.
+
+Vytvoríme \uv{polovičný} visitor návrhový vzor. Predpokladajme nasledujúce triedy:
+%$
+\begin{code}
+struct B { virtual ~B() = default; };
+struct D1 : B {};
+struct D2 : B {};
+\end{code}
+
+K nim vytvoríme visitor:
+%$
+\begin{code}
+struct visitor
+{   void visit(B&);
+    virtual void visit(D1&) = 0;
+    virtual void visit(D2&) = 0; };
+\end{code}
+
+V inom súbore vytvoríme implementáciu visitoru. Pre túto ukážku napíšeme do definície triedy aj definície funkcií.
+%$
+\begin{code}
+struct printing_visitor : visitor
+{   std::ostream& out;
+public:
+    printing_visitor(std::ostream& out) : out(out) {}
+    using visitor::visit;
+    void visit(D1&) override { out << "D1"; }
+    void visit(D2&) override { out << "D2"; } };
+\end{code}
+
+Potom môžeme vytvoriť \texttt{main}, v~ktorom použijeme konkrétnu implementáciu \texttt{visitor}, ale referencie, ktoré máme k~dispozícii sú na typ \texttt{B}.
+%$
+\begin{code}
+std::unique_ptr<B> f(bool x)
+{   if (x) return std::make_unique<D1>();
+    else   return std::make_unique<D2>();
+}
+int main()
+{   printing_visitor v(std::cout);
+    v.visit(*f(true));  // "D1"
+    v.visit(*f(false)); // "D2"
+    return 0;
+}
+\end{code}
+
+Úlohou je už len implementovať \texttt{visitor::visit(B\&)}. Použijeme upcast na dynamický typ. Na volanie použijeme \texttt{candidate\_functions}, navyše v~kombinácii s~\texttt{viable\_functions} pre väčšiu optimalizáciu.
+%$
+\begin{code}[fontsize=\footnotesize]
+void visitor::visit(B& b)
+{
+    static const auto viables = PPreflection::viable_functions(
+        PPreflection::candidate_functions(
+            Preflection::type::reflect(PP::type<visitor>)
+                .get_member_functions())
+            .trim_by_name("visit"),
+        PP::type_tuple<visitor&, D1&>,
+        PP::type_tuple<visitor&, D2&>);
+
+    viables.invoke({*this, PPreflection::dynamic_polymorphic_reference(b)});
+}
+\end{code}

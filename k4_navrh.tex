@@ -1,0 +1,995 @@
+\chapter{Návrh a~implementácia} \label{navrh}
+
+V tejto kapitole urobíme návrh celého projektu. Pri netriviálnej implementácii uvedieme aj zdrojový text. Pôjde predovšetkým o~vyriešenie problémov zadaných cieľom práce.
+
+\section{Architektúra}
+
+Aby sme obišli potrebu upravovať prekladač, upravíme jeho vstup. Projekt rozdelíme na dve časti: knižnica \PPreflection{} a~generátor \PPreflector{}. \PPreflection{} sa použije ako statická knižnica a~\PPreflector{} bude zo zdrojového kódu generovať metadáta, ktoré bude \PPreflection{} konzumovať. Vstup do prekladača sa upraví tým spôsobom, že užívateľ do \texttt{.cpp} súboru pripíše príkaz \texttt{\#include} s~názvom vygenerovaného súboru.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=4.5cm]
+\node (cpp)    [subor]                                  {*.cpp};
+\node (PPor)   [proces,                right of=cpp]    {\PPreflector{}};
+\node (meta)   [subor,   yshift=2.4cm, below of=PPor]   {*.cpp.meta};
+\node (gcc)    [proces,  yshift=2.4cm, below of=cpp]    {Prekladač};
+\node (obj)    [subor,   yshift=2.4cm, below of=gcc]    {*.obj};
+\node (linker) [proces,  yshift=2.4cm, below of=obj]    {Linker};
+\node (exe)    [exe,     yshift=2.4cm, below of=linker] {Program};
+\node (PPion)  [library, yshift=2.4cm, below of=meta]   {\PPreflection{}};
+\node (PP)     [library, yshift=2.4cm, below of=PPion]  {\PP{}};
+
+\draw [arrow] (cpp)        to (PPor);
+\draw [arrow] (PPor)       to (meta);
+\draw [arrow] (meta)       to node[anchor=west] {\texttt{\#include}} (cpp);
+\draw [arrow] (cpp)        to (gcc);
+\draw [arrow] (gcc)        to (obj);
+\draw [arrow] (PPion)      to node[anchor=east] {\texttt{\#include}} (meta);
+\draw [arrow] (PP)         to (PPion);
+\draw [arrow] (obj)        to (linker);
+\draw [arrow] (PPion)      to (linker);
+\draw [arrow, dashed] (PP) to (linker);
+\draw [arrow] (linker)     to (exe);
+
+\begin{pgfonlayer}{background}
+\filldraw [line width=1.2cm,join=round,orange!10]
+  (PPor.north -| PPor.east) rectangle (PP.south -| PP.west);
+\end{pgfonlayer}
+\end{tikzpicture}
+\caption{Proces prekladu s~introšpekciou}
+\label{build}
+\end{figure}
+%$
+Na obrázku môžeme v~ľavom stĺpci vidieť tradičný postup pri preklade \Cpp{}. Oranžovým rámčekom sú vyznačené pridané fázy týmto projektom.
+
+Introšpekciu urobíme pre každú prekladovú jednotku zvlášť. Uvažujme nasledujúci príklad dvoch prekladových jednotiek:
+%$
+\begin{code}
+// X.cpp
+namespace N {}
+// Y.cpp
+namespace N {} namespace M {}
+\end{code}
+%$
+Každej entite zodpovedá jeden objekt deskriptoru. Otázkou je, či sa budeme chovať k~\texttt{N} zo súboru \texttt{X.cpp} a~\texttt{N} zo súboru \texttt{Y.cpp} ako ku rovnakej entite. Ak by sme ich chápali ako jednu entitu, mohli by sme spojiť všetky súbory vstupného programu a~vygenerovať jedny spoločné metadáta. Tie by sme potom museli pomocou preprocesoru vložiť do každej prekladovej jednotky. Tieto metadáta by sa odkazovali na reflektované entity, takže každá prekladová jednotka by musela obsahovať všetky entity z~celého programu. Rozhodli sme sa neísť týmto smerom a~pri introšpekcii zvažovať každú prekladovú jednotku samostatne, akoby sama tvorila celý program. To, že medzi prekladovými jednotkami prebieha linkovanie, je pre našu knižnicu transparentné. V~uvedenom príklade by sa teda vytvorili celkom tri objekty deskriptorov.
+
+Z rozsahových dôvodov nebudeme reflektovať aliasy a~premenné. Nie je žiadny technický dôvod, prečo by to nebolo možné, ale na demonštráciu, že introšpekcia je implementovateľná, bude stačiť reflektovať triedy, namespace-y a~funkcie. Doplniť podporu pre chýbajúce entity neskôr by už nemalo byť po návrhovej ani implementačnej stránke náročné.
+
+Reflektovať šablóny je takmer nemožné. \Cpp{} sa chová ku šablónam tak, že pre každý zoznam šablónových argumentov, s~ktorým bola šablóna použitá, vytvorí prekladač samostatnú entitu. Preto nie sú šablóny entitami v~tom istom zmysle, ako sú zvyšné nešablónové entity. Introšpekcia nemôže vopred vedieť, aké šablónové argumenty plánuje užívateľ pre danú šablónu použiť. To by sa mohlo vyriešiť tým, že užívateľ by musel vymenovať všetky používané kombinácie argumentov vopred. S takýmto obmedzením je už introšpekcia šablón veľmi slabá, takže ju nebudeme podporovať a~šablónové entity budeme ignorovať.
+
+Ignorácia šablón znamená, že nereflektujeme ani ich špecializácie. To má za následok, že kód, ktorý sám o~sebe nie je šablónový, nemožno reflektovať, ak používa konkrétne špecializácie šablón. Tento nedostatok je možné vyriešiť samostatne od problému s~introšpekciou šablón ako takých, no z~dôvodu rozsahu práce sme ho zatiaľ hlbšie v~projekte neadresovali.
+
+\section{Podoba metadát} \label{metadata}
+
+Hlavným problémom, ktorý nám cieľ práce predkladá, je zariadiť, aby užívateľ nemusel explicitne registrovať entity jazyka do našej knižnice. To rieši automatická generácia metadát zo zdrojového textu. V~tejto časti urobíme návrh podoby vygenerovaných metadát, návrh generátoru sa nachádza v~podkapitole \ref{reflector}.
+
+Z návrhu štruktúry projektu vyplýva, že metadáta musí tvoriť platný štandardný \Cpp{} kód, keďže prekladač nie je upravený. Pre zjednodušenie na chvíľu uvažujme, že jedinými dátami o~entitách, ktoré chceme reflektovať, sú ich názvy. Tieto dáta môžeme uložiť do premennej. Keďže ide o~informáciu známu za prekladu, premenná môže byť \texttt{constexpr} (a navyše aj \texttt{inline}).
+%$
+\begin{code}
+// dummy.cpp
+struct S {};
+struct T {};
+
+#include "dummy.cpp.meta"
+
+// dummy.cpp.meta
+constexpr inline auto S_name = "S"sv;
+constexpr inline auto T_name = "T"sv;
+\end{code}
+%$
+Z tohoto príkladu môžeme vidieť, že by bolo veľmi prirodzené vedieť sa odkazovať na metadáta o~type cez samotný typ, namiesto názvu premennej. To sa samozrejme dá docieliť špecializáciou šablónovej premennej.
+%$
+\begin{code}
+template <typename T> constexpr inline auto name = /* ? */;
+
+template <> constexpr inline auto name<S> = "S"sv;
+template <> constexpr inline auto name<T> = "T"sv;
+\end{code}
+%$
+Ak o~tomto reflektovaní uvažujeme ako o~mapovaní, v~príklade mapujeme typ na hodnotu \uv{meno}. Ak by sme chceli mapovať namespace, aký kľúč použijeme v~kóde? Mohli by sme zachovať princíp, že na metadáta mapujeme \emph{typy} a~vytvoriť každému namespace jeden reprezentujúci typ. Takému typu budeme hovoriť \emph{tag}.
+%$
+\begin{code}
+namespace N {}
+
+// .meta
+#define PPR_META template <> constexpr inline
+
+namespace tags { struct N; }
+
+PPR_META auto name<tags::N> = "N"sv;
+\end{code}
+
+Typy sú sami sebe tagmi, ale aký tag majú funkcie? Tu sa dostávame k~jednému nedostatku návrhu projektu. Samozrejme, funkcie môžu dostať --- takisto ako namespace --- každá svoj typ. Jednoduchšie by bolo funkciám priradiť ako tag ich adresu. Tak ušetríme typ za každú funkciu a~navyše nemusíme vyriešiť, ako z~tagu získať adresu. Spôsobili sme tým dva problémy. Prvý: adresa nie je typ. To má celkom jednoduché riešenie, vložíme ju do \texttt{PP::value}. Druhým je, že nie je možné získať adresu neverejnej funkcie.  Toto vyriešime veľmi \uv{surovo}: budeme ignorovať všetky neverejné entity. Toto rozhodnutie nemá až také veľké nepriaznivé následky, ako by sa mohlo zdať, a~navyše je jednoducho vratné. Bližšie vysvetlenie dôvodov a~následkov ignorovania neprístupných entít sa nachádza v~kapitole \ref{vylepsenia}. Zatiaľ je iba dôležité vedieť, že naše riešenie nebude úplne korektné, ale je v~známom zmysle predchodcom korektného riešenia. Predovšetkým v~tom, že je jednoduchšie na implementáciu.
+
+Teraz predpokladajme, že o~entitách potrebujeme reflektovať ešte nejaké informácie navyše. Nazvime ich \texttt{info}.
+%$
+\begin{code}
+struct S {};
+
+// .meta
+template <typename T> constexpr inline auto name = /* ? */;
+template <typename T> constexpr inline auto info = /* ? */;
+
+PPR_META auto name<S> = "S"sv;
+PPR_META auto info<S> = "s"sv;
+\end{code}
+%$
+Rôznych druhov informácií o~entitách bude ešte niekoľko. Bolo by jednoduchšie mať len jednu šablónovú premennú a~typ metadát, čo o~entite potrebujeme, kódovať transformáciou tagu entity. To sa dá docieliť pomocou šablónových tried, ktoré nazveme \emph{tag šablóny}.
+%$
+\begin{code}
+struct S {};
+
+// .meta
+template <typename> struct name;
+template <typename> struct info;
+
+template <typename T>
+constexpr inline auto metadata = /* ? */;
+
+PPR_META auto metadata<name<S>> = "S"sv;
+PPR_META auto metadata<info<S>> = "s"sv;
+\end{code}
+%$
+Ak by sme chceli namiesto mena triedy zistiť jej \texttt{info}, stačí zmeniť šablónovú triedu, nie meno premennej. To má pozitívne implikácie pre implementáciu, keďže šablónová premenná nemôže byť na rozdiel od šablónovej triedy argumentom nejakej operácie.
+
+\subsubsection{\texttt{reflect}}
+
+Ako rozhranie pre použitie metadát vytvoríme funkciu \texttt{reflect}, ktorá akceptuje tag šablónu špecializovanú tagom a~vráti referenciu na príslušné metadáta.
+
+Keďže väčšina použití \texttt{reflect} potrebuje získať deskriptor, vytvoríme funk\-ciu \texttt{reflect\_descriptor}, ktorá akceptuje tag a~vráti referenciu na príslušný deskriptor.
+
+\subsection{Inicializátor metadát}
+Nešpecializované \texttt{metadata} treba nejako inicializovať, no vložili sme tam iba komentár. Aby sme určili, čím by sme mali inicializovať, treba sa zamyslieť, kedy sa k~tejto hodnote dostaneme. Pre všetky reflektované entity vytvoríme špecializáciu, takže ak program pristupuje ku hodnote z~nešpecializovaného \texttt{metadata}, znamená to, že pristupuje k~typu informácie, ktorá nie je o~entite zaznamenaná, alebo k~entite, ktorá nebola reflektovaná. V~každom prípade ide o~chybu, takže do inicializácie treba dať niečo, čo bude chybu pri prístupe ohlasovať.
+
+Mohli by sme inicializovať objektom prázdneho typu s~názvom, ktorý slúži ako správa o~chybe. Tento názov sa objaví pri preklade niekde vo výstupe prekladača.
+%$
+\begin{code}
+struct unreflected_entity_error {};
+template <typename T>
+constexpr inline auto metadata = unreflected_entity_error{};
+\end{code}
+%$
+Problém takého riešenia je, že zlyhanie závisí od použitia premennej \texttt{metadata}, tým pádom hlásenie o~chybe môže byť vo výstupe prekladača ťažko viditeľné. Ak by sa \texttt{metadata} používalo napríklad takto: \texttt{metadata<foo<bar>{}>.f()}, dostali by sme chybu, že \texttt{f} nie je členom \texttt{unreflected\_entity\_error}. Tento trik dokonca ani nezaručuje, že k~nejakému zlyhaniu dôjde --- hoci je pravda, že \texttt{metadata} bude používané tak, že prázdna trieda jeho použitiu určite vyhovovať nebude. Ak by sa náhodou premenná použila iba takto: \texttt{auto x = metadata<foo<bar>{}>}, k~žiadnej chybe nedôjde.
+
+Šikovnejšie by bolo, ak by \emph{akékoľvek použitie} nešpecializovaného \texttt{metadata} vyvolalo chybu za prekladu. To sa dá docieliť --- dokonca s~ľubovoľnou správou vo výstupe --- pomocou \texttt{static\_assert}. Naivné riešenie by vyzeralo takto:
+%$
+\begin{code}
+struct unreflected_entity_error
+{ static_assert(false, "unreflected entity"); };
+
+template <typename T>
+constexpr inline auto metadata = unreflected_entity_error{};
+\end{code}
+%$
+Toto fungovať nebude. Zlyhanie pri preklade dostaneme vždy, pretože prekladač môže bezpečne povedať, že podmienka v~\texttt{static\_assert} bude vždy \texttt{false}. Musíme podmienku \uv{skryť}, aby bola závislá od template parametru.
+%$
+\begin{code}
+template <typename> constexpr inline auto always_false = false;
+
+template <typename T> struct unreflected_entity_error
+{ static_assert(always_false<T>, "unreflected entity"); };
+
+template <typename T>
+constexpr inline auto metadata = unreflected_entity_error<T>{};
+\end{code}
+%$
+Teraz dostaneme prekladovú chybu zo zlyhania \texttt{static\_assert} iba vtedy, keď program pristúpi ku nešpecializovanému \texttt{metadata}. A navyše s~jednoznačnou a~zrozumiteľnou správou o~chybe.
+
+\subsection{Linkovanie}
+
+Hoci sa pri generácii metadát obmedzujeme naraz iba na jednu prekladovú jednotku, na jednom mieste musíme zvažovať aj linkovanie medzi jednotkami. Vytvorili sme princíp tagov, ktorými sa odkazujeme na entity, ktoré nám inak jazyk nedovolí používať ako argument. Týmito tagmi eventuálne špecializujeme rôzne šablónové premenné a~funkcie. Ak medzi dvoma prekladovými jednotkami linker nájde rovnakú šablónu špecializovanú rovnakým typom, dôjde k~linkovaniu a~informácie z~jednej prekladovej jednotky nám \uv{prepíšu} tie z~druhej. Aby sme tomu zabránili, potrebujeme, aby tagy boli unikátne typy v~každej prekladovej jednotke. To zariadime jednoducho tak, že deklarácie všetkých tagov a~tag šablón vložíme do anonymného namespace.
+
+\section{Rozhranie deskriptorov}
+
+Z cieľa práce vieme, že každej entite zodpovedá objekt deskriptoru. Niektoré typy entít sme sa rozhodli nereflektovať, takže nám ostali tri základné kategórie: typ, namespace a~funkcia. Tieto kategórie sú zjavne odlišné: typ je vlastnosť výrazu, funkcie sa dajú volať a~namespace je iba \uv{škatuľa}. Vytvorme si teda aj tri triedy deskriptorov so spoločným predkom \texttt{descriptor}. Každá trieda reprezentuje jeden druh entity.
+
+Všetky entity majú spoločné to, že majú nejaké meno. Jedinou výnimkou je globálny namespace, ktorý zatiaľ ignorujme; vrátime sa k~nemu pri implementácii. Ak má entita meno \texttt{E}, ale nachádza sa v~namespace \texttt{N}, jej celé meno je \texttt{N::E}. Ak ide o~funkciu, jej návratový typ prechádza meno rodičov, napríklad \texttt{void N::f()}. Preto rozdelíme výpis mena na dve virtuálne funkcie, čast pred a~po mene rodiča. Celé meno už zvládne trieda descriptor napísať pomocou týchto dvoch funkcií a~mena rodiča.
+
+Entita prislúcha typu iba vtedy, ak ide o~užívateľsky definovaný typ. Rozšírime pojem deskriptoru tak, že okrem všetkých entít vytvoríme deskriptor aj všetkým typom. Užívateľsky definované typy sú zároveň typmi aj entitami; dostanú iba jeden deskriptor.
+
+Pre entity dáva vždy zmysel pojem rodič; jedinou výnimkou je zase globálny namespace. Typy, ktoré nie sú užívateľsky definované, napríklad ukazovatele, rodiča nemajú. Potrebujeme vytvoriť jednu triedu, ktorá reprezentuje pojem rodiča deskriptoru. Na to použijeme \emph{sum typ}. Sum typ je typ, ktorý je sémantickým zjednotením viacerých typov. Rodič deskriptoru môže vo všeobecnosti byť namespace, trieda alebo nič. Toto zjednotenie nazveme \texttt{parent\_descriptor}. Zjednotenie name\-space a~triedy nazveme \texttt{class\_or\_namespace}. Sum typy budeme implementovať pomocou \texttt{std::variant}. V~skutočnosti potrebujeme zjednotenia konštantných referencií na uvedené typy, ale \texttt{std::variant} referencie neakceptuje. To sa dá vyriešiť zabalením referencie do triedy podobnej \texttt{PP::forward\_wrap}.
+%$
+\begin{figure}[H]
+\begin{center}
+\begin{tikzpicture}
+\umlclass[x=3, y=0]{descriptor}{}{
+    \texttt{get\_parent(): parent\_descriptor}\\
+    \texttt{print\_name\_before\_parent(PP::ostream\&): void}\\
+    \texttt{print\_name\_after\_parent(PP::ostream\&): void}\\
+    \texttt{has\_name(PP::string\_view): bool}
+}
+\umlsimpleclass[x=0, y=-3]{type}
+\umlsimpleclass[x=3, y=-3]{Namespace}
+\umlsimpleclass[x=6, y=-3]{function}
+
+\umlinherit{type}{descriptor}
+\umlinherit{Namespace}{descriptor}
+\umlinherit{function}{descriptor}
+\end{tikzpicture}
+\caption{Hierarchia deskriptorov}
+\end{center}
+\end{figure}
+
+\subsection{Rozhranie deskriptorov typov}
+
+Všetky typy budú vedieť vypísať svoj názov, ktorý má tiež podľa syntaxe dve polovice, ktoré obe patria za názov rodiča. Tieto dve polovice názvu využijeme pri vypisovaní názvov zložených typov, ako napríklad referencií, kde sa medzi dve polovice názvu odkazovaného typu vloží \texttt{(\&)}, resp. \texttt{(\&\&)}.
+
+Typy sa v~\Cpp{} dajú rozdeliť do následujúcich disjunktných kategórií:
+
+\begin{itemize}[itemsep=0pt]
+    \item referenčné typy - \texttt{cv T ref}
+    \item \texttt{void}
+    \item funkčné typy - \texttt{R(P...) cv ref+ n}
+    \item polia bez rozmeru - \texttt{T[]}
+    \item polia s~rozmerom - \texttt{T[N]}
+    \item ukazovatele - \texttt{cv T*}
+    \item ukazovatele na člena - \texttt{cv T C::*}
+    \item \texttt{nullptr\_t}
+    \item floating point typy
+    \item celočíselné typy
+    \item \texttt{enum}
+    \item \texttt{union}
+    \item triedy
+\end{itemize}
+%$
+\emph{ref} označuje takzvaný ref kvalifikátor, čo je \texttt{\&} alebo \texttt{\&\&}. \emph{ref+} je ref navyše s~možnosťou prázdneho slova. \emph{cv} označuje cv kvalifikátor, čo je prázdne slovo, \texttt{const}, \texttt{volatile} alebo \texttt{const volatile}.
+
+Niektoré z~týchto kategórií by sa dali rozdeliť na ešte menšie skupiny, ale takéto delenie bude nášmu projektu stačiť. Potrebovali by sme tieto kategórie nejako zmysluplne preložiť do stromu dedičnosti. Na to potrebujeme nájsť nejaké väčšie zoskupenia.
+
+Prvú väčšiu kategóriu by mohli tvoriť typy, na ktoré sa dá vytvoriť ukazovateľ. To sú všetky typy okrem referenčných. Máme teda prvé delenie typov: referenčné vs. ukázateľné.
+
+Všetky referenčné typy musia vedieť vrátiť, na aký typ odkazujú. Nazvime túto kategóriu typov referencovateľné. To sú všetky ukázateľné typy okrem \texttt{void}. Problém je, že referencie odkazujú na cv kvalifikovaný typ. Tento princíp sa bude vyskytovať často. Niektoré miesta v~jazyku vyžadujú typ, iné dvojicu cv a~typ. Pre túto dvojicu si vytvoríme triedu \texttt{cv\_type} šablónovanú podľa typu. Referencie môžu byť navyše dvoch druhov, lvalue a~rvalue.
+
+Ukázateľným a~referencovateľným typom zatiaľ nedáme žiadne špeciálne funk\-cie. Do kategórie \texttt{void} patrí iba jeden typ, takže ten tiež nepotrebuje väčšie rozhranie.
+
+\begin{figure}[H]
+\begin{center}
+\begin{tikzpicture}
+\catcode`\_=12
+\umlclass{type}{}{
+    \texttt{print\_name\_prefix(PP::ostream\&): void}\\
+	\texttt{print\_name\_suffix(PP::ostream\&): void}
+}
+
+\umlsimpleclass[x=-5, y=-3, anchor=west]{pointable_type}
+\umlclass[x=3.4, y=-3.5]{reference_type}{}{
+	\texttt{remove\_reference()}\\
+	\texttt{    : cv\_type<referencable\_type>}\\
+    \texttt{is\_value(PP::ostream\&): bool}
+}
+
+\umlsimpleclass[x=-0.5, y=-6]{referencable_type}
+\umlsimpleclass[x=-5, y=-5, anchor=west]{void_type}
+
+\umlinherit{pointable_type}{type}
+\umlinherit{reference_type}{type}
+
+\umlinherit{referencable_type}{pointable_type}
+\umlinherit{void_type}{pointable_type}
+\end{tikzpicture}
+\caption{Hierarchia deskriptorov typov}
+\end{center}
+\end{figure}
+
+\subsubsection{Rozhranie referencovateľných typov}
+
+Typy, ktoré môžu vytvárať objekty, sú všetky referencovateľné typy okrem funkčných typov. Funkčné typy vracajú svoj návratový typ, zoznam typov parametrov, svoje cv a~ref kvalifikátory a~či sú \texttt{noexcept}.
+
+Zvláštnou kategóriou sú polia bez rozmeru. Tie sú podľa štandardu \emph{nekompletný typ}. Nekompletné sú tiež triedy medzi svojou deklaráciou a~definíciou. Mechanizmus nekompletných typov sme nepreskúmali dostatočne, aby sme ho vedeli korektne implementovať, takže deklarované ale nedefinované triedy ignorujeme.
+
+Všetky typy polí sú podľa štandardu objektovými typmi, ale iba kompletné typy z~nich majú veľkosť. Preto vytvoríme kategóriu objektových typov a~z~nich dediace kompletné objektové typy. Keďže ignorujeme nekompletné triedy, všetky objektové typy v~našej hierarchii poznajú svoje zarovnanie. Kompletné objektové typy vedia navyše deštruovať objekt svojho typu.
+
+Keďže sme už vyčlenili polia bez rozmeru, ďalej môžeme vyčleniť polia s~rozmerom. Obe kategórie polí budú vedieť vrátiť typ a~cv svojho prvku. Prvkom poľa môže byť iba kompletný objektový typ. Polia s~rozmerom navyše vracajú svoj rozmer.
+
+Ešte musíme vyriešiť, akej kategórie je návratový typ funkcie. Tu narážame prvýkrát na jeden ťažko riešiteľný problém typového systému \Cpp{}. Nedá sa z~neho vytvoriť stromová štruktúra tak, aby sme zachytili všetky dôležité kategórie. Keďže \texttt{constexpr} nepodporuje virtuálnu dedičnosť, ako jediné riešenie nám ostá\-va zase použiť sum typy. Návratový typ je \texttt{void}, referencia alebo kompletný objektový typ okrem polí. Typom parametru môžu byť rovnaké kategórie ako pri návratovom type s~výnimkou \texttt{void}.
+
+\begin{figure}[H]
+\begin{center}
+\begin{tikzpicture}
+\catcode`\_=12
+\umlsimpleclass[anchor=west]{referencable_type}
+
+\umlclass[y=-2, anchor=west]{object_type}{}{
+    \texttt{alignment(): size\_t}\\
+}
+\umlclass[x=6.2, y=-2, anchor=west]{function_type}{}{
+	\texttt{return\_type(): RT}\\
+	\texttt{parameters(): any\_view<IC::ra, PT>}\\
+	\texttt{is\_noexcept(): bool}\\
+	\texttt{get\_cv(): cv\_qualifier}\\
+	\texttt{get\_ref(): ref\_qualifier}\\
+}
+
+\umlclass[y=-5.75, anchor=west]{complete_object_type}{}{
+    \texttt{size(): size_t}\\
+    \texttt{destroy(void*): void}\\
+}
+\umlclass[x=6.2, y=-6, anchor=west]{unknown_bound_array_type}{}{
+    \texttt{remove\_extent()}\\
+    \texttt{    : complete\_object\_type}\\
+    \texttt{get\_extent(): size\_t}\\
+}
+
+\umlclass[x=6.2, y=-9.5, anchor=west]{known_bound_array_type}{}{
+    \texttt{remove\_extent()}\\
+    \texttt{    : complete\_object\_type}
+}
+\umlsimpleclass[y=-8.7, anchor=west]{non_array_object_type}
+
+\umlinherit{object_type}{referencable_type}
+\umlinherit[anchor2=0]{function_type}{referencable_type}
+
+\umlinherit{complete_object_type}{object_type}
+\umlinherit{unknown_bound_array_type}{object_type}
+
+\umlinherit{known_bound_array_type}{complete_object_type}
+\umlinherit{non_array_object_type}{complete_object_type}
+\end{tikzpicture}
+\caption{Hierarchia deskriptorov referencovateľných typov}
+\end{center}
+\end{figure}
+
+\subsubsection{Rozhranie objektových typov okrem polí}
+
+Ostali nám štyri kategórie: ukazovatele, ukazovatele na člena, užívateľsky definované typy a~\emph{fundamentálne typy} okrem \texttt{void}. Fundamentálne sú typy poskytnuté jazykom, napríklad \texttt{int}, \texttt{char} alebo \texttt{bool}.
+
+Ukazovatele ukazujú na cv kvalifikovaný ukázateľný typ.
+
+Ukazovatele na člena ukazujú na člena určitej triedy, pričom daný člen môže byť akéhokoľvek referencovateľného typu, keďže nemôžeme ukazovať na referenciu a~člen triedy nemôže byť \texttt{void}.
+
+Užívateľsky definované typy majú za rodiča triedu alebo namespace.
+
+Fundamentálne typy nemajú zatiaľ nijakú pre nás užitočnú spoločnú vlastnosť.
+
+\begin{figure}[H]
+\begin{center}
+\begin{tikzpicture}
+\catcode`\_=12
+\umlsimpleclass[y=0, anchor=west, width=30ex]{non_array_object_type}
+
+\umlclass[y=-6, anchor=west, width=32ex]{pointer_type}{}{
+    \texttt{remove\_pointer(): cv_type<pointable\_type>}
+}
+\umlclass[y=-8.8, anchor=west, width=32ex]{pointer_to_member_type}{}{
+	\texttt{get\_class\_type(): const class_type\&}\\
+	\texttt{get\_member\_type(): cv\_type<referencable\_type>}
+}
+\umlsimpleclass[y=-1.5, anchor=west, width=32ex]{non_void_fundamental_type}
+\umlclass[y=-3.5, anchor=west, width=32ex]{user_defined_type}{}{
+    \texttt{get_parent(): class_or_namespace}
+}
+
+\umlVHinherit[anchors=14 and 0]{pointer_type}{non_array_object_type}
+\umlVHinherit[anchors=15 and 5]{pointer_to_member_type}{non_array_object_type}
+\umlinherit{non_void_fundamental_type}{non_array_object_type}
+\umlVHinherit[anchors=17 and -5]{user_defined_type}{non_array_object_type}
+\end{tikzpicture}
+\caption{Hierarchia deskriptorov objektových typov okrem polí}
+\end{center}
+\end{figure}
+
+\subsubsection{Rozhranie užívateľsky definovaných typov}
+
+Sú tri základné druhy užívateľsky definovaných typov: triedy, uniony a~enumy. V~štandarde sa uniony a~triedy spolu nazývajú \emph{classes} a~triedy, tak ako ich myslíme tu, sú nazvané \emph{non-union classes}. Toto rozdelenie dáva zmysel, pretože väčšina vlastností tried sa aplikuje aj na union. Vlastnosti špecifické pre triedy budeme dopĺňať neskôr, zatiaľ nám postačí do rozhrania vložiť spoločné vlastností pre \emph{classes}. Tie všetky súvisia so získaním nejakého pohľadu na ich členov, ako napríklad získanie pohľadu na členské funkcie.
+
+Zaujímavé sú enumy. Každému enumu zodpovedá zoznam jeho povolených hodnôt, ktorým je priradené meno. Tieto hodnoty budeme tiež reflektovať --- priradíme každej vlastný deskriptor. Okrem hodnôt sa dá pri enume hovoriť o~jeho \emph{underlying} type, čo je celočíselný typ, v~ktorom je uložená hodnota enumu. Enumy môžu byť tiež \emph{scoped}, čo je označené v~deklarácii ako \texttt{enum} vs. \texttt{enum class}, a~môžu mať \emph{fixed underlying} typ, čo znamená že underlying typ je explicitne stanovený.
+
+\begin{figure}[H]
+\begin{center}
+
+\begin{tikzpicture}
+\catcode`\_=12
+\umlsimpleclass{user_defined_type}
+
+\umlclass[x=-2, y=-3]{enum_type}{}{
+	\texttt{get\_underlying\_type()}\\
+	\texttt{    : const integral\_type\&}\\
+	\texttt{is\_scoped(): bool}\\
+	\texttt{has\_fixed\_underlying\_type(): bool}\\
+	\texttt{get_values()}\\
+	\texttt{    : any\_view<IC::ra, const enum\_value\&>}
+}
+\umlclass[x=7.7, y=-8, anchor=east]{class_type}{}{
+	\texttt{get\_constructors(): CONSTRUCTORS}\\
+	\texttt{get\_member\_functions(): MEMBER\_FUNCTIONS}\\
+	\texttt{get\_conversion\_functions(): CONVERSION\_FUNCTIONS}\\
+	\texttt{get\_static\_member\_functions(): STATIC\_FUNCTIONS}\\
+	\texttt{get\_nested\_types()}\\
+	\texttt{    : any\_view<IC::ra, const user\_defined\_type\&>}
+}
+
+\umlsimpleclass[x=3, y=-11.5]{non_union_class_type}
+\umlsimpleclass[x=-2, y=-11.5]{union_type}
+
+\umlsimpleclass[x=7.7, anchor=east]{descriptor}
+\umlclass[x=7.7, y=-3, anchor=east]{enum_value}{}{
+	\texttt{get\_value()}\\
+	\texttt{    : dynamic\_object}\\
+	\texttt{get\_parent()}\\
+	\texttt{    : const enum\_type\&}
+}
+
+\umlinherit{enum_type}{user_defined_type}
+\umlVHinherit[anchors=85 and 0]{class_type}{user_defined_type}
+
+\umlinherit{non_union_class_type}{class_type}
+\umlinherit{union_type}{class_type}
+
+\umlinherit{enum_value}{descriptor}
+\end{tikzpicture}
+\caption{Hierarchia deskriptorov užívateľsky definovaných typov}
+\end{center}
+\end{figure}
+
+\subsubsection{\texttt{reflect}}
+
+Na príjemnejšiu prácu s~reflektovaním typov, vytvoríme v~\texttt{type} statickú funk\-ciu \texttt{reflect}, ktorá určí z~typu argumentu správny návratový typ podľa kategórie, do ktorej typ spadá. To znamená, že táto funk\-cia môže byť použitá pred vytvorením metadát, pretože jej návratový typ nezávisí od definície tejto funkcie.
+
+\section{Dynamické štruktúry}
+
+\subsection{Referencia}
+
+S hotovým typovým systémom môžeme implementovať centrálnu triedu pre prístup k~hodnotám skrz introšpekciu --- \texttt{dynamic\_reference}. Táto trieda bude symbolizovať slabo typovanú referenciu, s~možnosťou priradenia, teda zmeny toho, na čo odkazuje. Tým sa skôr podobá na referencie napríklad v~\Csharp{}.
+
+Referencie môžu odkazovať v~\Cpp{} na objekty alebo funkcie. Potrebovali by sme jeden typ, ktorý by dokázal odkazovať na obe. Naivne by sme mohli použiť \texttt{void*}, keďže do takého typu môžeme priradiť adresy všetkých objektov (ignorujúc potrebný \texttt{const\_cast}). Adresy funkcií by sme mohli pretypovať. To je ale nesprávne, pretože štandard nám takúto konverziu nedovoľuje. Dovoľuje nám pretypovať ukazovatele na funkciu medzi sebou. Vytvoríme teda sum typ \texttt{void*} a~\texttt{void(*)()}.
+
+Ďalej si dynamická referencia potrebuje pamätať, akého typu je objekt alebo funkcia, na ktorý ukazuje. Keďže potrebujeme byť schopní meniť, kam ukazuje, nemôžeme túto informáciu ukladať referenciou. Urobíme to teda ukazovateľom. Keďže vytvárame dynamickú \emph{referenciu}, potrebujeme ukazovať na referencovateľný alebo referenčný typ. Zvolíme ukazovateľ na referencovateľný typ, pretože tak získame schopnosť jednoducho meniť kvalifikátory dynamickej referencie. Pri tejto možnosti si ešte musíme uložiť cv kvalifikátor odkazovaného typu a~ref kvalifikátor danej dynamickej referencie.
+
+Chceme, aby bolo možné vytvoriť dynamickú referenciu pomocou \emph{copy inicializácie} z~ľubovoľného výrazu:
+\begin{code}
+void f(dynamic_reference);
+int x = 7;
+dynamic_reference r = x;
+f(x);
+\end{code}
+%$
+To dosiahneme vytvorením takéhoto konštruktoru:
+\begin{code}
+constexpr dynamic_reference(auto&& r) noexcept
+	: dynamic_reference(&r, type::reflect(PP_DECLTYPE(r)))
+{}
+\end{code}
+%$
+\texttt{PP\_DECLTYPE} nám určí \texttt{PP::type} z~výrazu \texttt{r}. Dôležité je upozorniť, že týmto konštruktorom sa nepredlžuje životnosť, teda napríklad takéto použitie vedie na chybný program, keďže ukladáme odkaz na dočasnú premennú:
+%$
+\begin{code}
+dynamic_reference r = 5;
+\end{code}
+%$
+
+Pre prístup k~silno typovanej hodnote vytvoríme funkciu \texttt{cast\_unsafe}. Časť \uv{unsafe} v~mene signalizuje, že nebudeme nijako kontrolovať korektnosť takého prístupu, funkcia teda iba vykoná \texttt{reinterpret\_cast}, kvôli čomu táto funkcia nemôže byť \texttt{constexpr}. To je hlavný dôvod, prečo nemôže byť \texttt{constexpr} ani dynamické volanie funkcií.
+
+Keďže si dynamická referencia ukladá informáciu o~cv a~ref v~premennej, je veľmi jednoduché jej tieto vlastnosti zmeniť. Vytvoríme si na to členskú funkciu \texttt{with\_cv\_ref}, ktorá vráti novú referenciu s~inými cv a~ref charakteristikami. Táto funkcia bude užitočná pri konverziách, keďže veľkú časť konverzií tvoria tie, kde sa nemení typ a~menia sa iba cv alebo ref kvalifikátory.
+
+Ako poslednú schopnosť pridáme triede \texttt{dynamic\_reference} \texttt{visit}. Ako z~ná\-zvu vyplýva, ide o~analógiu \texttt{visit} z~\texttt{std::variant}. Niekedy bude síce užívateľ poznať typ dynamickej referencie, no nie jej cv a~ref vlastnosti. Na to vytvoríme funkciu, ktorá akceptuje silný typ a~navštevujúci funktor, ktorého úlohou má byť akceptovať všetky možné druhy referencií na daný typ, vrátane všetkých cv kvalifikátorov daného typu. \texttt{dynamic\_reference} podľa svojich kvalifikátorov vyberie správny \texttt{cast\_unsafe} a~zavolá daný funktor. S rovnakým princípom vytvoríme aj \texttt{visit\_ptr}, ktorá predpokladá, že dynamická referencia ukazuje na ukazovateľ a~urobí výber správneho volania podľa cv ukázaného typu.
+%$
+\begin{code}
+int x = 4;
+dynamic_reference rx = std::move(x);
+rx.visit(type<int>, f); // ekvivalentné f(std::move(x))
+
+auto px = &std::as_const(x);
+dynamic_reference rpx = px;
+rpx.visit_ptr(PP::type<int>, f); // ekvivalentné f(std::move(px))
+\end{code}
+%$
+Na \texttt{std::move} pri druhom príklade nezáleží, keďže \texttt{visit\_ptr} sa používa iba pri ukazovateľoch. Použitie je mienené tak, že funktor má akceptovať ukazovateľ hodnotou. Z~dôvodu bezpečnosti by sa dala upraviť implementácia, aby najprv skopírovala ukazovateľ a~potom volala funktor na dočasnej kópii, pretože pri aktuálnom chovaní dovoľujeme meniť hodnotu v~odkazovanom ukazovateli vtedy, keď funktor má referenčný parameter, čo nie je určený zmysel \texttt{visit\_ptr}. Na zmenu odkazovanej hodnoty je určený \texttt{visit}.
+
+\subsection{Objekt}
+
+Pomocou dynamickej referencie sme schopní odkazovať sa na objekt ľubovoľného typu pomocou jednej triedy. Teraz vytvoríme triedu, ktorá dokáže vlastniť objekt ľubovoľného typu.
+
+Podobne ako pri dynamickej referencii si potrebujeme pamätať typ, ten bude tentokrát kategórie kompletný objektový typ. Ako druhé dáta potrebujeme pamäť, v~ktorej bude sa držaný objekt nachádzať. Tu sa nevyhneme dynamickej alokácii. Maximum, čo môžeme spraviť je optimalizovať na malé veľkosti objektov. To urobíme tým spôsobom, že ukazovateľ na dynamickú pamäť vložíme do union spolu s~poľom bajtov rovnakej veľkosti. V~prípade, že držaný objekt sa zmestí veľkosťou a~zarovnaním do pamäti, ktorú by inak zaberal ukazovateľ, uložíme ho priamo tam. Inak použijeme dynamickú alokáciu.
+
+Dynamická alokácia musí byť vykonávaná pomocou \texttt{operator new}, pretože to je jediný spôsob, ako sa dá štandardne alokovať zarovnaná pamäť.
+
+Vytvoríme konverznú funkciu na dynamickú referenciu. Dynamická referencia teda môže odkazovať aj na dynamický objekt.
+
+Veľmi dôležitou schopnosťou, čo potrebujeme, aby dynamický objekt mal, je vytvorenie takzvanej plytkej kópie, teda vytvorenie nového dynamického objektu s~rovnakými dátami. Pri tejto operácii nebude prebiehať žiadne volanie konštruktoru, keďže sa bude iba kopírovať pamäť po bajtoch. Táto operácia je teda vo všeobecnosti nebezpečná, pretože nedôjde k~riadnemu začatiu života objektu. My túto operáciu budeme použivať iba pri takzvaných \emph{skalárnych} typoch, čo sú typy, kde táto operácia bezpečná je.
+
+Hlavným spôsobom, ktorým chceme dynamický objekt vytvárať, je, že konštruktoru predáme bezparametrický funktor, ktorý vracia hodnotový typ. Volaním tohoto funktoru si dynamický objekt inicializuje svoju pamäť. K tomuto konštruktoru môžeme vyrobiť pomocnú statickú funkciu \texttt{create}, ktorá akceptuje typ a~argumenty a~inicializuje zavolaním konštruktoru.
+%$
+\begin{code}
+auto a = dynamic_object([](){ return 5; });
+auto b = dynamic_object::create(type<int>, 5);
+// inicializácia s~int(5)
+\end{code}
+%$
+Výhoda použitia funktoru je dedukcia typu dynamického objektu z~návratového typu.
+
+Táto trieda sa bude sémanticky chovať ako objekt, ktorý vlastní. Preto nebude kopírovateľná a~bude výhradným vlastníkom daného objektu. Tiež potrebuje v~deštruktore volať deštruktor typu. Na tieto dve vlastnosti sme si už pripravili pomôcky: \texttt{movable} a~\texttt{scoped}.
+
+Dynamický objekt môže tiež držať okrem dát objektu aj kód o~chybe; to sa bude hodiť pri volaní funkcií. Nikdy tieto dve informácie nebude potrebovať naraz, takže môžu byť v~union.
+
+Ďalší špeciálny stav, v~ktorom sa môže dynamický objekt nachádzať, je stav \texttt{void}. Vtedy je objekt v~korektnom stave, no nedrží hodnotu. Takýto objekt vytvoríme napríklad pri volaní funkcie s~deklarovaným návratovým typom \texttt{void}.
+
+\subsection{Premenná}
+
+Vytvorili sme slabo typované úložiská pre referencie aj pre objekty. Premenné môžu byť vo všeobecnosti oboch druhov. To isté platí pre návratový typ funkcií. Vytvoríme sum typ dynamickej referencie a~dynamického objektu, ktorý nazveme \texttt{dynamic\_variable}. Bolo by tiež možné obe dynamické triedy spojiť už pri návrhu do jednej, čím by sa mohla získať určitá optimalizácia. Zastávame názor, že návrh s~dvoma samostatnými triedami a~jedným sum typom je prehľadnejší, hoci by toto rozhodnutie malo byť ešte preskúmané pri pokusoch o~vylepšenie výkonu.
+
+\section{Rozhranie deskriptorov funkcií}
+
+Na rozdiel od typov, funkcie nie sú v~štandarde tak jednoznačne zatriedené do kategórií. Kategórie si musíme vytvoriť sami. V~prvom rade sú funkcie dvoch druhov: tie, ktoré sú deklarované v~namespace, a~tie deklarované v~triede. Keďže v~našej introšpekcii sa budeme chovať ku konštruktorom ako ku funkciám, funkcie, ktoré súvisia s~triedami, sú buď členské funkcie, alebo konštruktory. Aplikujú sa na ne všetky vlastnosti funkcií, jediný rozdiel je v~tom, na akých miestach a~akým spôsobom sa tieto vlastnosti uplatňujú. Členské funkcie sa ďalej delia na statické a~nestatické, pričom nestatické môžu byť ešte špeciálneho druhu: konverzné.
+
+Spoločnou vlastnosťou všetkých funkcií je, že ich môžeme volať. Volanie funk\-cií v~\Cpp{} obnáša zopár komplexných mechanizmov, takže tie delegujeme na iné triedy. Deskriptory funkcií budú ako argument volania prijímať iterátor na dynamické referencie, o~ktorých predpokladajú, že sú rovnakých typov ako sú parametre. Zodpovednosť za konverziu a~kontrolu počtu argumentov má volajúci. Toto rozhodnutie plynie z~faktu, že v~\Cpp{} sa funkcie nikdy nevolajú tak, že užívateľ určí jednu konkrétnu funkciu, ale vždy sa vyberá najlepšia z~určitej množiny tzv. kandidátov. Je zbytočné pre deskriptor vytvárať volanie so všetkými korektnými vlastnosťami, pretože ide iba o~špeciálny prípad všeobecnejšej operácie volania, keď má množina kandidátov veľkosť 1. Toto volanie nazveme z~uvedených dôvodov \texttt{invoke\_unsafe}.
+
+Vypísanie mena funkcie so sebou nesie svoje špecifiká, ale detaily vynecháme, keďže ide o~triviálny návrh.
+
+Namespace funkcie majú za rodiča vždy namespace, zvyšné funkcie majú za rodiča triedu.
+
+Ďalšie rozdiely sú vo volaniach. Konštruktory nikdy nevracajú referenciu ani \texttt{void}, takže ich volanie môže vrátiť dynamický objekt. Členské funkcie majú jeden špeciálny argument, objekt triedy, ktorej je funkcia členom. Konverzné funkcie akceptujú iba tento argument, keďže sú bezparametrické.
+
+Konštruktory a~konverzné funkcie môžu byť navyše deklarované ako explicitné.
+
+\begin{figure}[H]
+\begin{center}
+\begin{tikzpicture}
+\catcode`\_=12
+\umlclass[x=0, y=0]{function}{}{
+    \texttt{invoke\_unsafe(any\_iterator<IC::ra, dynamic\_reference>)}\\
+    \texttt{    : dynamic\_variable}\\
+    \texttt{get\_parent(): class\_or\_namespace}\\
+    \texttt{get\_function\_type(): const function\_type\&}
+}
+
+\umlclass[x=-3, y=-3.3]{maybe_static_member_function}{}{
+    \texttt{get\_parent(): const class\_type\&}
+}
+\umlclass[x=4.5, y=-3.5]{namespace_function}{}{
+    \texttt{get\_parent()}\\
+    \texttt{    : const Namespace\&}
+}
+
+\umlclass[x=1.5, y=-7.7]{constructor}{}{
+    \texttt{invoke\_unsafe(any\_iterator<IC::ra, dynamic\_reference>)}\\
+    \texttt{    : dynamic\_object}\\
+    \texttt{is\_explicit(): bool}
+}
+\umlsimpleclass[x=3, y=-5.5]{static_member_function}
+\umlclass[x=-2, y=-10.9]{member_function}{}{
+    \texttt{invoke\_unsafe(dynamic\_reference,}\\
+    \texttt{  any\_iterator<IC::ra, dynamic\_reference>)}\\
+    \texttt{    : dynamic\_variable}
+}
+
+\umlclass[x=5, y=-11.9]{conversion_function}{}{
+    \texttt{invoke\_unsafe(}\\
+    \texttt{  dynamic\_reference)}\\
+    \texttt{    : dynamic\_variable}\\
+    \texttt{is\_explicit(): bool}
+}
+\umlsimpleclass[x=-2, y=-13.2]{non_conversion_member_function}
+
+\umlinherit{maybe_static_member_function}{function}
+\umlinherit{namespace_function}{function}
+
+\umlinherit[anchor1=150]{constructor}{maybe_static_member_function}
+\umlinherit{static_member_function}{maybe_static_member_function}
+\umlinherit[anchors=158 and -150]{member_function}{maybe_static_member_function}
+
+\umlinherit[anchors=90 and 15]{conversion_function}{member_function}
+\umlinherit{non_conversion_member_function}{member_function}
+\end{tikzpicture}
+\caption{Hierarchia deskriptorov funkcií}
+\end{center}
+\end{figure}
+
+\subsection{Rozhranie deskriptoru namespace}
+
+Namespace sú v~istom zmysle kontajnery na úrovni jazyka, takže jediné rozhranie ich deskriptoru je poskytnutie zoznamov ich členov. V~namespace sa môžu nachádzať iné namespace, užívateľsky definované typy a~namespace funkcie.
+
+Rodičom namespace môže byť iba namespace.
+
+\begin{figure}[H]
+\begin{center}
+\begin{tikzpicture}
+\catcode`\_=12
+\umlsimpleclass{descriptor}
+
+\umlclass[y=-2.7]{Namespace}{}{
+    \texttt{get\_namespaces(): any_view<IC::ra, const Namespace\&>}\\
+    \texttt{get\_types(): any_view<IC::ra, const user\_defined\_type\&>}\\
+    \texttt{get\_functions(): any_view<IC::ra, const namespace\_function\&>}\\
+    \texttt{get\_parent(): const Namespace\&}
+}
+
+\umlinherit{Namespace}{descriptor}
+\end{tikzpicture}
+\caption{Hierarchia deskriptoru Namespace}
+\end{center}
+\end{figure}
+
+\subsection{Kovariancia návratového typu}
+
+Pri prepisovaní virtuálnej funkcie platí nasledujúce pravidlo: prepisujúca funk\-cia má rovnaký názov, rovnaké parametre, rovnaké cv a~ref kvalifikátory a~rovnaký alebo \emph{kovariantný} návratový typ. V~kontexte \Cpp{} sú dva typy kovariantné, ak ide o~dve referencie alebo dva ukazovatele, pričom jeden smeruje na typ, ktorý je potomkom druhého. Návratový typ prepisujúcej funkcie musí byť podmnožinou návratového typu prepisovanej funkcie. To znamená, že prepisujúca funkcia musí mať návratový typ smerujúci na potomka. Zmysel tohoto chovania je, že špeciálnejšia implementácia funkcie môže mať aj špeciálnejší návratový typ.
+
+Vezmime si príklad funkcií \texttt{get\_parent} vo \texttt{function} a~\texttt{namespace\_function}. function vracia rodiča ako \texttt{class\_or\_namespace} a~prepisujúca funckcia vracia \texttt{const Namespace\&}. Tieto dve funkcie nespĺňajú podmienky jazyka o~kovariancii, teda išlo by o~chybný program, ak by sme naše hierarchie prepísali do kódu. To je škoda, pretože sémanticky je typ \texttt{const Namespace\&} podmnožinou typu \texttt{class\_or\_namespace}. Toto je jedno miesto, kde by bola potrebná podpora sum typov od jazyka.
+
+Tento problém vyriešime tak, že tieto funkcie sa prepisovať nebudú. Funkcii z~triedy predka pridáme parameter, ktorému určíme default argument. Tak sa pri volaní z~kontextu predka dá funkcia zavolať ako bez argumentov. Potom vytvoríme novú virtuálnu funkciu s~rovnakým názvom ale bez parametrov. Funkciu potomka implementuje pomocou špeciálnejšej funkcie.
+%$
+\begin{code}
+template <typename T> struct covariance_tag {};
+struct Base
+{   virtual sum_type<X, ...> f(P..., covariance_tag<Base> = {}) = 0;
+};
+
+struct Derived : Base
+{   virtual const X& f(P...) = 0;
+private:
+    sum_type<X, Y> f(P... p, covariance_tag<Base>) override final
+    { return f(PP_F(p)...); }
+};
+\end{code}
+
+\section{Implementácia deskriptorov}
+
+Rozhrania deskriptorov implementujeme ako triedy šablónované podľa tagu danej entity, takže jednej reflektovanej entite bude zodpovedať jedna trieda. Objekt tejto triedy bude jedinečný deskriptor danej entity. Tento objekt uložíme do \texttt{metadata}, pod vlastnou tag šablónou \texttt{descriptor}.
+%$
+\begin{code}
+struct S {};
+
+// .meta
+PPR_META auto metadata<descriptor<S>> = descriptor_S{};
+\end{code}
+
+\subsection*{Kruhová závislosť}
+
+Príkladom častých metadát, ktoré budeme generovať pre každú entitu je rodič. Navyše vytvorme vymyslené metadáta \texttt{children}. Konkrétne také metadáta nebudeme zaznamenávať pri žiadnej entite, no každý rodič musí mať zoznam, respektíve zoznamy svojich detí.
+%$
+\begin{code}
+struct S { struct T {}; };
+
+// .meta
+PPR_META auto metadata<descriptor<S>> = descriptor_S{};
+PPR_META auto metadata<descriptor<S::T>> = descriptor_S_T{};
+PPR_META auto metadata<children<S>> =
+    forward_as_array(reflect_descriptor(PP::type<S::T>));
+PPR_META auto& metadata<parent<S::T>> = reflect_descriptor(PP::type<S>)
+\end{code}
+%$
+Problém s~priamym odkazovaním medzi metadátami je, že musíme najprv vytvoriť deskriptory, aby sa mali metadáta na čo odkazovať. To nám spôsobí nepríjemné poradie pri generovaní. Namiesto toho by sme sa mohli odkazovať cez tagy.
+%$
+\begin{code}
+struct S { struct T {}; };
+
+// .meta
+PPR_META auto metadata<parent<S::T>> = PP::type<S>;
+PPR_META auto metadata<descriptor<S::T>> = descriptor_S_T{};
+PPR_META auto metadata<children<S>> = PP::type_tuple<S::T>;
+PPR_META auto metadata<descriptor<S>> = descriptor_S{};
+\end{code}
+%$
+Takto môžeme oddialiť potrebu existencie objektu deskriptoru. Niekde ale stále musíme vytvoriť pole detí. To urobíme v~statickej premennej implementačnej triedy deskriptoru, preto potrebujeme, aby vytvorenie deskriptoru dieťaťa predchádzalo vytvoreniu deskriptoru rodiča a~aby ostatné informácie o~entite predchádzali jej deskriptor. Odkaz na rodiča neuložíme do statickej premennej, ale budeme ho získavať pomocou \texttt{reflect} iba v~definícii funkcií. Tak prelomíme kruhovú závislosť medzi deskriptormi.
+
+\subsection*{Základná štruktúra}
+
+Implementácie budeme nazývať s~prefixom \texttt{basic\_}. Nelistové triedy z~hierarchie dostanú šablónovanú implementáciu s~parametrom navyše, ktorý bude určovať predka. Väčšina funkcií rozhrania potrebuje jednu informáciu z~metadát, ktorú implementujúca funkcia získa pomocou \texttt{reflect}.
+%$
+\begin{code}[fontsize=\footnotesize]
+struct base               { virtual I1 info1() = 0; };
+struct middle1 : base     { virtual I2 info2() = 0; };
+struct middle2 : base     { virtual I3 info3() = 0; };
+struct derived1 : middle1 { virtual I4 info4() = 0; };
+struct derived2 : middle1 { virtual I5 info5() = 0; };
+
+template <typename Tag, typename Base>
+struct basic_base : Base
+{ I1 f() override final { return reflect(type<tags::info1<Tag>>); } };
+template <typename Tag, typename Base>
+struct basic_middle1 : basic_base<Tag, Base>
+{ I2 f() override final { return reflect(type<tags::info2<Tag>>); } };
+template <typename Tag>
+struct basic_middle2 : basic_base<Tag, middle2>
+{ I3 f() override final { return reflect(type<tags::info3<Tag>>); } };
+template <typename Tag>
+struct basic_derived1 : basic_middle1<Tag, derived1>
+{ I4 f() override final { return reflect(type<tags::info4<Tag>>); } };
+template <typename Tag>
+struct basic_derived2 : basic_middle1<Tag, derived2>
+{ I5 f() override final { return reflect(type<tags::info5<Tag>>); } };
+\end{code}
+
+\subsection*{Pohľad na členov}
+
+Niektoré funkcie vyžadujú návrat random access \texttt{any\_view} na deskriptory. Metadáta obsahujú n-ticu tagov, ale vďaka knižnici \PP{} môžeme jednoducho mapovať do poľa skrz \texttt{reflect}, čím získame kontajner, ktorý nám vie poskytnúť požadovaný pohľad.
+%$
+\begin{code}
+template <typename Tag> class basic : public base
+{   static constexpr auto desc_array =
+        tuple_map_to_array(type<const desc&>,
+                           reflect_descriptor,
+                           reflect(tags::descs<Tag>));
+public:
+    any_view<IC::ra, const desc&> get_descs() override final
+    { return desc_array; }
+};
+\end{code}
+
+\subsection*{\texttt{invoke\_unsafe}}
+
+V \texttt{invoke\_unsafe} potrebujú implementácie deskriptorov funkcií vytvoriť dynamickú premennú inicializovanú výrazom volania funkcie, pričom potrebujú získať argumenty z~iterátoru na dynamické referencie. Najprv potrebuje implementácia konvertovať iterátor na n-ticu jednoduchou obalovou triedou, ktorá deleguje indexovaciu funkciu n-tice na indexovaciu funkciu random access iterátoru. Potom potrebuje zavolať na túto n-ticu dynamických referencií a~n-ticu typov parametrov zip skrz \texttt{cast\_unsafe}. Tak dostane n-ticu silno typovaných referencií na argumenty. Potom zavolá funkciu s~argumentami z~n-tice pomocou \texttt{PP::tuple\_apply}.
+%$
+\begin{code}
+return dynamic_variable::create([...]() -> decltype(auto)
+{   auto args = PP::tuple_zip_with_pack(
+        [](dynamic_reference ref, auto t) -> auto&&
+        { return ref.cast_unsafe(t); },
+        !PP::make_view_tuple(PP::tuple_count_value_t(parameter_types),
+                             arg_iterator),
+        parameter_types);
+    
+    return PP::tuple_apply(PP_F(f), std::move(args));
+});
+\end{code}
+%$
+\texttt{operator!} vytvorí z~n-tice referencií n-ticu hodnôt pomocou copy a~move konštruktorov. To je potrebné, pretože interne pri volaniach funkcií vzniknú dočasné objekty \texttt{dynamic\_reference}, ktorých život by skončil skôr, ako potrebujeme.
+
+\section{Volanie funkcií s~konverziami}
+
+Volanie funkcie funguje v~\Cpp{} nasledovne:
+
+\begin{enumerate}
+    \item Vytvorí sa zoznam kandidátov podľa kontextu a~spôsobu volania.
+    \item Filtrujú sa kandidáti, ktorý nemôžu vytvoriť korektné volanie.
+    \item Zo zvyšných funkcií (\emph{viable functions}), sa nájde maximálna podľa nutných konverzií. Ak existuje práve jedna, volá sa, inak je program chybný.
+\end{enumerate}
+%$
+Tento mechanizmus sa nazýva overload resolution. Vytvorenie kandidátov závisí od kontextu, čo môže byť napríklad meno, ktoré bolo pri volaní uvedené, a~namespace, v~ktorom sa volanie nachádzalo. Preto prvý krok necháme na volajúceho a~zo zvyšných dvoch krokov vytvoríme funkciu \texttt{overload\_resolution}.
+
+Parametre budú pohľad na kandidátov a~pohľad na typy argumentov. Vo všeobecnosti ovplyvňujú rozhodovanie overload resolution aj iné parametre, špeciálne: konverzia, ktorá má nastať na návratovej hodnote, a~či sú povolené užívateľsky definované konverzie. Pri dynamickom volaní neuvažujeme konverziu na návratovej hodnote a~povolené sú všetky konverzie. Interne ale môžu vznikať volania, ktoré potrebujú tieto parametre nastaviť.
+
+Keďže pri volaní funkcie môžu nastávať konverzie, návratový typ operácie \texttt{overload\_resolution} nemôže byť iba funkcia. Musíme k~nej pribaliť aj konverzie pre každý argument a~konverziu pre návratovú hodnotu; spolu vytvoria triedu, ktorá sa bude volať \texttt{viable\_function}. Predpis funkcie teda bude:
+%$
+\begin{code}[fontsize=\footnotesize]
+viable_function overload_resolution(PP::concepts::view auto&& candidates,
+                                    PP::concepts::view auto&& argument_types,
+                                    auto&& return_value_sequences,
+                                    bool can_use_user_defined)
+\end{code}
+
+Pri volaní funkcie je nutné inicializovať každý parameter príslušným argumentom. Parameter môže byť referenčný alebo hodnotový, čo vytvára dva veľmi odlišné druhy inicializácie. V~štandarde sa tieto druhy nazývajú \emph{reference} inicializácia a~\emph{copy} inicializácia. Na proces inicializácie si vytvoríme funkciu s~menom \texttt{initialization\_sequence}, ktorá akceptuje typ parametru, typ argumentu a~to, či môže použiť užívateľsky definované konverzie. Typ parametru môže byť referenčný, hodnotový, alebo \emph{implicit object parameter}. Tento tretí špeciálny typ parametru má prvý parameter pri volaní členskej funkcie, teda viaže sa naň objekt, na ktorom sa uskutočňuje volanie. Pre tieto tri druhy parametru vytvoríme sum typ.
+
+\texttt{initialization\_sequence} vracia takzvanú \emph{(implicitnú) konverznú sekvenciu}.
+%$
+\begin{code}[fontsize=\footnotesize]
+implicit_conversion_sequence initialization_sequence(
+    parameter_type_olr_reference target_type,
+    const reference_type& initializer_type,
+    bool can_use_user_defined)
+\end{code}
+
+Konverzná sekvencia je postupnosť konverzií, ktoré sa postupne aplikujú na hodnotu jedného typu, aby vznikla hodnota iného typu. Sú dva druhy konverzných sekvencií: \emph{štandardná} a~\emph{obyčajná}. Štandardná sa skladá z~niekoľko štandardných konverzií, ktoré sú jednoznačne definované štandardom. Obyčajná sekvencia sa skladá, v~poradí, zo štandardnej sekvencie, užívateľsky definovanej konverzie a~druhej štandardnej sekvencie. Užívateľsky definovaná konverzia je buď konverzná funkcia alebo konštruktor. Vytvoríme si triedy, ktoré budú tieto pojmy za\-chy\-tá\-vať: \texttt{standard\_conversion\_sequence} a~\texttt{implicit\_conversion\_sequence}. Pôjde o~veľmi primitívne triedy, ktoré má za úlohu zaplniť ten, kto ich vytvára. Hlavnými funkcionalitami, ktoré implementujú, je vzájomné porovnanie a~postupné zavolanie všetkých konverzií v~poradí s~vytvorením výsledného objektu. Triedy ukladajú informácie nutné na porovnanie konverzií tak, aby bola operácia porovnania čo najjednoduchšia. Celá práca určenia týchto informácii je delegovaná na miesto vytvorenia objektov týchto tried.
+
+Porovnanie konverzií je centrálny mechanizmus celého volania funkcií. Štandard špecifikuje podmienky, za ktorých je jedna konverzná sekvencia \uv{lepšia} ako druhá. Tak vytvára usporiadanie, na ktorom hľadá overload resolution jedno maximum. Kvôli ignorácii niektorých vlastností jazyka neimplementujeme všetky podmienky porovnania, pretože niektoré sa na našu podmnožinu jazyka neaplikujú. Z~tých, ktoré sa aplikujú, sme vynechali len jednu, ide o~pravidlo s~číslom 12.2.4.3.4.4 v~štandarde. Toto pravidlo sa týka konverzií na predka alebo potomka s~medzistupňom.
+
+Pri invokácii konverznej sekvencie môže vzniknúť dočasný objekt, ktorého život musí skončiť až po volaní funkcie, takže rozhranie konverzie bude takéto:
+%$
+\begin{code}[fontsize=\footnotesize]
+dynamic_reference convert(dynamic_reference arg, dynamic_variable& temp);
+\end{code}
+
+Potrebujeme zaplniť štruktúry pre konverzné sekvencie. Užívateľsky definovaná konverzia sa vždy vyberie rekurzívnym overload resolution, takže pri nej pôjde iba o~priradenie deskriptoru, ktorý nám vráti OR. Štandardnú konverziu implementujeme ako ukazovateľ na funkciu, ktorá akceptuje dynamickú referenciu a~vracia dynamický objekt, respektíve referenciu. Funkcie na vytvorenie týchto konverzií pridáme do rozhrania deskriptorov typov. Druhy štandardných konverzií sú presne popísané v~štandarde. Napríklad, do \texttt{function\_type} pridáme virtuálnu funkciu \texttt{function\_noexcept\_conversion}, ktorá dokáže odobrať \texttt{noexcept} z~ukazovateľa na funkciu.  v~implementácii poznáme typ zdrojovej hodnoty. Vďaka charakteru tejto konkrétnej konverzie vieme vyvodiť aj cieľový typ. Potom použijeme \texttt{visit}, respektíve \texttt{visit\_ptr} z~\texttt{dynamic\_reference} na vytvorenie správnej funkcie.
+
+Pri konverzii aritmetických typov nevieme vyvodiť cieľový typ z~deskriptoru. Keďže je iba konečný počet aritmetických typov, môžeme si vytvoriť v~kompilačnom čase tabuľku všetkých možných konverzií a~za behu pomocou \texttt{dynamic\_cast} určiť, o~aký typ ide, a~vybrať jednu z~nich.
+
+Zaujímavé sú konverzie viacúrovňových ukazovateľov, keďže pri nich potrebujeme skúmať štruktúru typu do arbitrárnej hĺbky. Vytvoríme štruktúru, ktorá bude zachytávať viacúrovňový ukazovateľ ako postupnosť modifikátorov. Popis tejto postupnosti spolu s~pravidlami pre jej porovnanie sa nachádza v~štandarde. Táto konverzia, nazývaná \emph{kvalifikačná}, zodpovedá konverzii \texttt{const\_cast}. Predpokladáme, že pri \texttt{const\_cast} sa hodnota v~pamäti nemení a~mení sa iba typ, takže \texttt{standard\_conversion\_sequence} nepotrebuje volať žiadnu skutočnú konverziu, stačí len vytvoriť z~dynamického objektu plytkú kópiu a~nastaviť jej správny typ.
+
+\subsubsection{\texttt{candidate\_functions}}
+
+Pre zjednodušenie používania OR vytvoríme triedu \texttt{candidate\_functions}, ktorá reprezentuje kandidátov volania funkcie. Dá sa skonštruovať z~pohľadu na \texttt{const function\&} a~ponúka funkcie na orezanie množiny, napríklad podľa mena alebo počtu parametrov. Ako svoj hlavný účel ponúka funkciu \texttt{invoke}, ktorá na množine spustí OR. Ak OR uspeje, spustí konverziu na každom argumente a~zavolá \texttt{invoke\_unsafe} z~deskriptoru. Ak neuspeje, vytvorí dynamickú premennú s~neplatným stavom. Túto triedu používa napríklad \texttt{Namespace} vo funkcii \texttt{invoke\_qualified}, ktorá sa pre namespace \texttt{N} a~názov funkcie \texttt{f} chová ako \texttt{::N::f(...)}. Táto funkcia interne vyrobí objekt \texttt{candidate\_functions} zo zoznamu svojich funkcií, oreže množinu podľa mena a~zavolá \texttt{invoke}.
+
+Trieda \texttt{candidate\_functions} tiež slúži ako pohľad na \texttt{const function\&}.
+
+\subsection{Optimalizácia}
+
+OR môže byť veľmi zdĺhavý proces, takže je vhodné umožniť optimalizáciu. Vyhnúť sa OR nemôžeme, keďže iba tak docielime korektné chovanie podľa štandardu jazyka. No keďže OR nezávisí na konkrétnych hodnotách argumentov, iba na ich typoch, môžeme si ho spočítať dopredu. Ak užívateľ zadá niektoré zoznamy typov argumentov, s~ktorými chce volanie na množine kandidátov používať, môžeme dopredu spustiť OR. Pri volaní potom stačí iba porovnať, či argumenty majú rovnaké typy ako niektorý z~dopredu spočítaných zoznamov. Ak sa nenájde zhoda, stále sa dá záložne zavolať OR pre typy použitých argumentov. Aktuálna implementácia toto záložné riešenie nepoužíva a~namiesto toho vráti pri nezhode chybnú dynamickú premennú. Túto funkcionalitu vložíme do triedy \texttt{viable\_functions}.
+
+\section{Polymorfná dynamická referencia}
+
+Aby sme mohli demonštrovať využitie tohoto projektu, cieľ nám predkladá implementovať dynamický visitor. Najprv si ukážme, ako vyzerá implementácia tradičného visitor návrhového vzoru.
+%$
+\begin{code}
+struct D1; struct D2;
+struct visitor {
+    virtual void visit(D1&) = 0;
+    virtual void visit(D2&) = 0;
+};
+struct B {
+    virtual void accept(visitor&) = 0;
+    virtual ~B() = default;
+};
+
+struct D1 : B { void accept(visitor& v) override { v.visit(*this); } };
+struct D2 : B { void accept(visitor& v) override { v.visit(*this); } };
+\end{code}
+%$
+Ďalej môžeme implementovať triedu visitor a~špecifikovať chovanie pre každého potomka.
+%$
+\begin{code}
+class printing_visitor : public visitor {
+    std::ostream& out;
+public:
+    printing_visitor(std::ostream& out) : out(out) {}
+    void visit(D1&) override { out << "D1\n"; }
+    void visit(D2&) override { out << "D2\n"; }
+};
+\end{code}
+%$
+Použitie:
+%$
+\begin{code}[fontsize=\footnotesize]
+void print(B& b, ostream& out) { printing_visitor v(out); b.accept(v); }
+print(*make_unique<D1>()); // "D1"
+print(*make_unique<D2>()); // "D2"
+\end{code}
+
+Cieľ od nás vyžaduje toto:
+%$
+\begin{code}
+struct B {};
+struct D1 : B {};
+struct D2 : B {};
+
+void print(/* ? */ b, ostream& out) { /* introspection */ }
+print(*make_unique<D1>()); // "D1"
+print(*make_unique<D2>()); // "D2"
+\end{code}
+
+Mohli by sme použiť dynamickú referenciu:
+%$
+\begin{code}
+void print(dynamic_reference b, ostream& out)
+{   printing_visitor v(out);
+    candidate_functions(type::reflect(PP::type<printing_visitor>)
+                        .get_member_functions())
+    .trim_by_name("visit")
+    .invoke({v, b});
+}
+\end{code}
+%$
+Použitie dynamickej referencie má dve veľké nevýhody. Prvou je, že zanáša introšpekciu do predpisu funkcie, teda do rozhrania programu. Lepšie by bolo, ak by použitie introšpekcie bol iba implementačný detail a~predpis funkcie obsahoval iba referenciu na predka.
+
+Druhou nevýhodou je, že užívateľ musí držať referencie na objekty v~dynamických referenciách, aby nestratil informáciu o~dynamickom type. Akonáhle by priradil napríklad do \texttt{unique\_ptr<B>}, informácia o~type by bola stratená. Vyžadujeme teda takýto predpis:
+%$
+\begin{code}
+void print(B& b, ostream& out) { /* introspection */ }
+\end{code}
+%$
+S takýmto predpisom je dynamický visitor neimplementovateľný. Dôvodom je, že objekty \texttt{D1} a~\texttt{D2} nenesú žiadnu informáciu o~svojom type, keďže nie sú \emph{polymorfné}. Polymorfný typ obsahuje aspoň jednu virtuálnu funkciu. Na určenie typu z~objektu by mohli triedy implementovať takúto funkciu:
+%$
+\begin{code}[fontsize=\footnotesize]
+struct B { virtual type& get_type() = 0; };
+struct D1 : B { type& get_type() { return type::reflect(PP::type<D1>); } };
+struct D2 : B { type& get_type() { return type::reflect(PP::type<D2>); } };
+\end{code}
+%$
+Takto máme všetky požadované informácie, no porušili sme zásadu, že nemôžeme zasahovať do existujúceho kódu. Musíme predpokladať, že podoba daných tried je fixná. Neostáva nám nič iné, ako sa spoľahnúť, že užívateľ poskytol aspoň virtuálny deštruktor, čím sa triedy stávajú polymorfnými.
+
+Z objektu môžeme získať jeho dynamický typ použitím operátoru \texttt{typeid} alebo \texttt{dynamic\_cast}. Obe operácie spolu tvoria mechanizmus jazyka \emph{RTTI}, ktorý niektorý užívatelia \Cpp{} v~prekladačoch vypínajú. Na tento problém neexistuje riešenie. Buď musíme zasiahnuť do existujúceho kódu a~použiť virtuálne funkcie, alebo sa musíme spoľahnúť na RTTI. Keďže \texttt{dynamic\_cast} vyžaduje jeden konkrétny typ, museli by sme ich skúšať postupne po jednom. Použijeme radšej \texttt{typeid}. \texttt{typeid} vracia objekt typu \texttt{type\_info}, ktorý obsahuje informáciu o~dynamickom type výrazu. Potrebujeme teda vytvoriť mapovanie na naše deskriptory. To urobíme konverziou na \texttt{type\_index}, ktorý má definované usporiadanie. Ten bude slúžiť ako kľúč v~mape, ktorej hodnoty budú odkazy na deskriptory typov.
+
+Ako rozhranie pre túto mapu vytvoríme v~\PPreflection{} takúto statickú funkciu:
+%$
+\begin{code}[fontsize=\footnotesize]
+static const non_union_class_type& reflect_polymorphic(std::type_index);
+\end{code}
+%$
+Jej definícia sa bude generovať v~metadátach. Vytvorí statickú mapu medzi hodnotami \texttt{type\_index} a~deskriptormi a~pri zavolaní sa na ňu odkáže. Pre jednoduchšiu prácu si vytvoríme triedu \texttt{type\_info\_map}, ktorá obaľuje \texttt{std::map} s~príjemnejším rozhraním pre naše použitie. Implementácia \texttt{reflect\_polymorphic} teda bude vyzerať takto:
+%$
+\begin{code}
+static const auto map = type_info_map(PP::type_tuple<Classes...>);
+return map.get(type);
+\end{code}
+%$
+Zoznam všetkých tried vyplní generátor metadát.
+
+Ako posledný krok potrebujeme pripraviť takzvaný \emph{upcast}, čo je pretypovanie v~hierarchii dedičnosti smerom ku potomkovi. To môžeme implementovať ako virtuálnu funkciu na deskriptore triedy. So schopnosťou upcast môžeme vytvoriť funkciu, ktorá akceptuje referenciu na polymorfný objekt a~vráti dynamickú referenciu ukazujúcu na objekt dynamického typu vstupného objektu:
+%$
+\begin{code}
+dynamic_reference dynamic_polymorphic_reference(auto&& obj)
+{   constexpr auto T = ~PP_DECLTYPE(obj);
+
+    if constexpr (PP::is_non_union_class(T))
+        return reflect_polymorphic(typeid(obj))
+               .upcast(type::reflect(T))(PP_F(obj));
+    else
+        return PP_F(obj);
+}
+\end{code}
+
+Teraz môžeme implementovať dynamický visitor:
+%$
+\begin{code}
+struct B { virtual ~B() = default; };
+struct D1 : B {};
+struct D2 : B {};
+
+void print(B& b, ostream& out)
+{   printing_visitor v(out);
+    candidate_functions(type::reflect(PP::type<printing_visitor>)
+                        .get_member_functions())
+    .trim_by_name("visit")
+    .invoke({v, dynamic_polymorphic_reference(b)});
+}
+\end{code}
+%$
+
+\section{Generácia metadát} \label{reflector}
+
+Kritickou časťou celej architektúry projektu je automatická generácia metadát. Musíme teda vytvoriť program, ktorý na vstupe dostane zdrojový text \Cpp{} a~zachytí jeho štruktúru v~podobe metadát.
+
+V podstate potrebujeme prekladač \Cpp{}, no s~iným výstupom. Dôvody, prečo nevytvárať vlastný prekladač, asi netreba uvádzať; minimálne by to poprelo zmysel doterajšej práce, keďže náš nový prekladač by mohol implementovať jazyk \Cpp{} upravený o~introšpekciu bez potreby knižnice.
+
+Ale ak nevytvoríme program, ktorý je schopný rozumieť zdrojovému kódu \Cpp{}, musíme na túto prácu nejako využiť už existujúci prekladač. \Clang{} a~\GCC{} oba podporujú možnosť pripojiť počas prekladu vlastný plugin. Nedokázali sme preskúmať, ako by sa dal vytvoriť plugin pre \GCC{}. \Clang{} má dostatočne dobrú dokumentáciu, z~ktorej je zrejmé, že sa k~nemu dá vytvoriť plugin, ktorý by dokázal generovať metadáta pre introšpekciu. Vytvoríme teda \Clang{} plugin \PPreflector{}.
+
+\subsection{Minimálna implementácia}
+
+Potrebovali by sme, aby plugin prechádzal \emph{AST}, ktorý \Clang{} vybuduje. AST je grafová dátová štruktúra, ktorú buduje prekladač zo zdrojového textu. Každej deklarácii zodpovedá vrchol, takže potrebujeme navštevovať vrcholy a~na základe informácií v~nich uložených vypisovať metadáta.
+
+Na to, aby bol náš plugin v~\Clang{} rozpoznaný, musíme vytvoriť určitú minimálnu implementáciu. Musíme vytvoriť triedu, ktorá implementuje rozhranie \texttt{clang::PluginASTAction}; nazvime ju \texttt{action}. Navyše potrebujeme vytvoriť statickú premennú, ktorá náš plugin registruje.
+%$
+\begin{code}[fontsize=\footnotesize]
+class action : public clang::PluginASTAction
+{   std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
+        clang::CompilerInstance& CI,
+        clang::StringRef) override final
+    { return std::make_unique<consumer>(CI); }
+    
+    bool ParseArgs(const clang::CompilerInstance&,
+                   const std::vector<std::string>&) override final
+    { return true; }
+    clang::PluginASTAction::ActionType getActionType() override final
+    { return clang::PluginASTAction::AddAfterMainAction; }
+};
+
+static clang::FrontendPluginRegistry::Add<PPreflector::action> X("", "");
+\end{code}
+
+\texttt{action} potrebuje vytvoriť ukazovateľ na \texttt{clang::ASTConsumer}, takže potrebujeme implementovať aj ten.
+%$
+\begin{code}[fontsize=\footnotesize]
+struct consumer : clang::ASTConsumer
+{
+    explicit consumer(clang::CompilerInstance&) {}
+    void HandleTranslationUnit(clang::ASTContext& context) override final
+    { /* ... */ }
+};
+\end{code}
+
+\texttt{HandleTranslationUnit} sa zavolá pre každú prekladovú jednotku s~vygenerovaným AST ako argumentom. Na prechod týmto AST si vytvoríme triedu \texttt{visitor}, ktorá implementuje \texttt{clang::RecursiveASTVisitor}. Cez tohoto predka dostaneme do \texttt{visitor} funkciu, ktorá akceptuje celé AST --- to triede \texttt{visitor} predá \texttt{consumer}, a~členskú funkciu, ktorá sa bude volať pre každý vrchol daného stromu. \texttt{visitor} tiež použijeme na ukladanie všetkých dát, ktoré potrebujú zotrvať medzi prechodmi cez vrcholy.
+%$
+\begin{code}[fontsize=\footnotesize]
+struct visitor : clang::RecursiveASTVisitor<visitor>
+{   /* data */
+    explicit visitor(clang::CompilerInstance& ci) {}
+    bool VisitDecl(clang::Decl* declaration) { /* ... */ return true; }
+};
+\end{code}
+
+\subsection{Štruktúra}
+
+Teraz máme k~dispozícii funkciu \texttt{VisitDecl}, ktorá sa zavolá pre každý vrchol AST. Z~parametru \texttt{clang::Decl} vieme určiť všetky potrebné informácie, ktoré potrebujeme do metadát zaznamenať.
+
+Jeden problém, ktorý ešte máme, je poradie prechádzania vrcholov. To si vo \texttt{visitor} môžeme nastaviť na preorder alebo postorder. Bohužiaľ, kvôli tvaru našich metadát nám nevyhovuje ani jedno. Uvažujme takýto vstup:
+%$
+\begin{code}
+namespace N { namespace X{} }
+namespace N { namespace Y{} }
+\end{code}
+%$
+Dôležité je si uvedomiť, že vrcholy AST sú deklarácie, nie entity. V~AST sa teda bude vrchol o~namespace \texttt{N} nachádzať dvakrát, pričom prvýkrát bude hlásiť ako svoje deklarácie deklaráciu namespace \texttt{X} a~v~druhom vrchole sa bude nachádzať informácia o~vnorenej deklarácii \texttt{Y}. Ak by sme vypisovali rovno vo funkcii \texttt{VisitDecl}, nedostali by sme nami požadovaný tvar metadát, kde musia všetky vnorené entity predchádzať nadradenú.
+
+Tento problém majú našťastie iba namespace. Definícia triedy síce obsahuje vnorené entity, no môže sa vyskytovať iba raz.
+
+Pre jednoduchosť vytvoríme triedu každému druhu entity, spolu ich nazveme \emph{obaly}. Obaly budú mať na starosti vypísať metadáta o~danej entite. Metadáta majú pravidelný tvar, takže sa dá jednoducho vytvoriť spoločné rozhranie všetkých obalov. Nadradený obal bude vždy obsahovať svoje vnorené obaly a~rekurzívne na ne najprv zavolá funkciu vypisujúcu metadáta. Na koniec vypíše nadradený obal svoje metadáta. Problém s~viacerými deklaráciami jedného namespace vyriešime tak, že \texttt{visitor} bude obsahovať mapu medzi deklaráciou namespace a~obalom daného namespace. \Clang{} nám dovoľuje pri deklarácii namespace vyžiadať odkaz na prvú deklaráciu. \texttt{visitor} bude používať v~mape iba túto prvú deklaráciu. Ak zistí, že kľúč sa v~mape už nachádza, bude vkladať vnorené obaly do hodnoty, ktorú vráti mapa. Ak sa kľúč v~mape nenachádza, znamená to, že sme na daný namespace narazili prvýkrát a~treba založiť nový obal, ktorý pridáme do obalu jeho nadradeného namespace. Keďže všetky entity sú nakoniec obsiahnuté v~globálnom namespace, stačí ak si \texttt{visitor} bude ukladať iba jeho obal.
+
+Na vytvorenie mapy medzi \texttt{type\_index} a~deskriptormi si \texttt{visitor} musí zaznamenávať každú triedu, ktorú objaví. Na koniec vypíše ich názvy do šablónového argumentu \texttt{type\_index\_map}.
+
+\subsubsection{Ukrytie entít}
+
+Kvôli nedokonalostiam návrhu je pri prechode vstupného zdrojového textu generátorom definované makro preprocesora \texttt{PPREFLECTOR\_GUARD}. Pri problematických entitách, ktoré nie je projekt schopný správne reflektovať je možné použiť takýto konštrukt pre ukrytie entít pred generátorom:
+
+\begin{code}
+#ifndef PPREFLECTOR_GUARD
+void problematic_function(templated<T>);
+#endif
+\end{code}
